@@ -32,7 +32,7 @@ def get_bot_token() -> str:
 BOT_TOKEN = get_bot_token()
 
 DB_PATH = os.environ.get("DB_PATH", "fridge.db")
-TZ_NAME = os.environ.get("TZ", "Europe/Amsterdam")
+TZ_NAME = os.environ.get("TZ", "Europe/Amsterdam").strip()
 TZ = ZoneInfo(TZ_NAME)
 
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
