@@ -14,7 +14,6 @@ from telegram.ext import (
     filters,
 )
 
-# ---- Token loading (Railway env first, then local .env if exists) ----
 def get_bot_token() -> str:
     token = os.environ.get("BOT_TOKEN", "").strip()
     if token:
@@ -125,14 +124,25 @@ def kb_del_buttons(rows: list[tuple[int, str, str]], kind: str, place: str) -> I
     kb = []
     for idx, (item_id, _text, _created_at) in enumerate(rows, start=1):
         kb.append([InlineKeyboardButton(f"Удалить {idx}", callback_data=f"del:do:{kind}:{place}:{item_id}")])
-    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="nav:main")])
+    kb.append([InlineKeyboardButton("⬅️ В меню", callback_data="nav:main")])
     return InlineKeyboardMarkup(kb)
+
+
+def kb_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Отмена", callback_data="nav:main")]
+    ])
 
 
 # ---------------- Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.message.reply_text("Выбери действие:", reply_markup=kb_main())
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.clear()
+    await update.message.reply_text("Ок, отменил. Выбери действие:", reply_markup=kb_main())
 
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -159,14 +169,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # category selection
     if ":kind:" in data:
-        act, _kw, kind = data.split(":")  # add:kind:meal
+        act, _kw, kind = data.split(":")
         context.user_data["act"] = act
         context.user_data["kind"] = kind
 
         if act in ("add", "del"):
             await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
         elif act == "show":
-            # show all places for this kind
             blocks = []
             for place in ("fridge", "kitchen", "freezer"):
                 rows = db_list(kind, place)
@@ -177,7 +186,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # place selection
     if ":place:" in data:
-        act, _place_kw, kind, place = data.split(":")  # add:place:meal:fridge
+        act, _place_kw, kind, place = data.split(":")
         context.user_data["act"] = act
         context.user_data["kind"] = kind
         context.user_data["place"] = place
@@ -185,8 +194,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if act == "add":
             await q.edit_message_text(
                 f"Добавление:\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
-                "Теперь напиши название одним сообщением (например: Рыбный суп).",
+                "Напиши название одним сообщением.\n"
+                "Если передумал — нажми ❌ Отмена.",
                 parse_mode=ParseMode.HTML,
+                reply_markup=kb_cancel(),
             )
             return
 
@@ -196,7 +207,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             msg = (
                 f"Удаление:\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
                 f"{fmt_rows(rows)}\n\n"
-                "Нажми кнопку удаления или отправь номер строкой (например: 2)."
+                "Нажми кнопку удаления или отправь номер (например: 2)."
             )
             await q.edit_message_text(
                 msg,
@@ -216,8 +227,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         msg = (
             f"Ок.\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
-            f"{fmt_rows(rows)}\n\n"
-            "Можно продолжать удалять."
+            f"{fmt_rows(rows)}"
         )
         await q.edit_message_text(
             msg,
@@ -272,9 +282,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 return
 
-        await update.message.reply_text("Для удаления отправь номер строки (например: 2) или используй кнопки.")
+        await update.message.reply_text("Для удаления отправь номер (например: 2) или используй кнопки.")
         return
 
+    # Default fallback
     await update.message.reply_text("Выбери действие:", reply_markup=kb_main())
 
 
@@ -283,6 +294,7 @@ def main() -> None:
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
