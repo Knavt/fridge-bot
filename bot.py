@@ -95,6 +95,7 @@ def fmt_rows(rows: list[tuple[int, str, str]]) -> str:
     return "\n".join(out)
 
 
+# -------------- Keyboards --------------
 def kb_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить", callback_data="act:add")],
@@ -120,12 +121,10 @@ def kb_place(action: str, kind: str) -> InlineKeyboardMarkup:
     ])
 
 
-def kb_del_buttons(rows: list[tuple[int, str, str]], kind: str, place: str) -> InlineKeyboardMarkup:
-    kb = []
-    for idx, (item_id, _text, _created_at) in enumerate(rows, start=1):
-        kb.append([InlineKeyboardButton(f"Удалить {idx}", callback_data=f"del:do:{kind}:{place}:{item_id}")])
-    kb.append([InlineKeyboardButton("⬅️ В меню", callback_data="nav:main")])
-    return InlineKeyboardMarkup(kb)
+def kb_back_to_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ В меню", callback_data="nav:main")]
+    ])
 
 
 def kb_cancel() -> InlineKeyboardMarkup:
@@ -207,34 +206,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             msg = (
                 f"Удаление:\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
                 f"{fmt_rows(rows)}\n\n"
-                "Нажми кнопку удаления или отправь номер (например: 2)."
+                "Отправь номер строки, которую удалить (например: 2).\n"
+                "Команда /cancel — отмена."
             )
             await q.edit_message_text(
                 msg,
                 parse_mode=ParseMode.HTML,
-                reply_markup=kb_del_buttons(rows, kind, place) if rows else kb_main(),
+                reply_markup=kb_back_to_menu(),
             )
             return
-
-    # delete by button
-    if data.startswith("del:do:"):
-        _del, _do, kind, place, item_id_s = data.split(":")
-        item_id = int(item_id_s)
-        db_delete(item_id)
-
-        rows = db_list(kind, place)
-        context.user_data["del_rows"] = rows
-
-        msg = (
-            f"Ок.\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
-            f"{fmt_rows(rows)}"
-        )
-        await q.edit_message_text(
-            msg,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb_del_buttons(rows, kind, place) if rows else kb_main(),
-        )
-        return
 
     await q.edit_message_text("Не понял кнопку. Вернёмся в меню.", reply_markup=kb_main())
 
@@ -245,7 +225,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = update.message.text.strip()
 
-    # ADD flow: waiting for text after picking kind+place
+    # ADD flow
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
@@ -261,7 +241,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # DEL flow: allow deleting by numeric index
+    # DEL flow by number (NO delete buttons)
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         if text.isdigit():
             n = int(text)
@@ -278,14 +258,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await update.message.reply_text(
                     f"Удалил ✅\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n{fmt_rows(new_rows)}",
                     parse_mode=ParseMode.HTML,
-                    reply_markup=kb_del_buttons(new_rows, kind, place) if new_rows else kb_main(),
+                    reply_markup=kb_back_to_menu() if new_rows else kb_main(),
                 )
                 return
 
-        await update.message.reply_text("Для удаления отправь номер (например: 2) или используй кнопки.")
+        await update.message.reply_text(
+            "Для удаления отправь номер строки (например: 2).\n"
+            "Или /cancel чтобы отменить."
+        )
         return
 
-    # Default fallback
     await update.message.reply_text("Выбери действие:", reply_markup=kb_main())
 
 
