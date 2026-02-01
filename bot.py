@@ -2,6 +2,7 @@ import os
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -14,6 +15,7 @@ from telegram.ext import (
     filters,
 )
 
+# ---- Token loading (Railway env first, then local .env if exists) ----
 def get_bot_token() -> str:
     token = os.environ.get("BOT_TOKEN", "").strip()
     if token:
@@ -30,52 +32,110 @@ def get_bot_token() -> str:
 
 BOT_TOKEN = get_bot_token()
 
-DB_PATH = os.environ.get("DB_PATH", "fridge.db")
 TZ_NAME = os.environ.get("TZ", "Europe/Amsterdam").strip()
 TZ = ZoneInfo(TZ_NAME)
+
+# Если на Railway есть Postgres — используем его
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+# Локальный fallback (если DATABASE_URL нет)
+SQLITE_PATH = os.environ.get("DB_PATH", "fridge.db")
 
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
 PLACE_LABEL = {"fridge": "Холодильник", "kitchen": "Кухня", "freezer": "Морозилка"}
 
 
-# ---------------- DB ----------------
+# ---------------- DB (Postgres or SQLite) ----------------
+def _pg_conn():
+    # импортируем только если реально используем Postgres
+    import psycopg  # type: ignore
+    return psycopg.connect(DATABASE_URL)
+
+
 def db_init() -> None:
-    with sqlite3.connect(DB_PATH) as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                kind TEXT NOT NULL,
-                place TEXT NOT NULL,
-                text TEXT NOT NULL,
-                created_by INTEGER,
-                created_at TEXT NOT NULL
-            )
-        """)
-        con.commit()
+    if DATABASE_URL:
+        with _pg_conn() as con:
+            with con.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS items (
+                        id BIGSERIAL PRIMARY KEY,
+                        kind TEXT NOT NULL,
+                        place TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        created_by BIGINT,
+                        created_at TIMESTAMPTZ NOT NULL
+                    )
+                """)
+            con.commit()
+    else:
+        with sqlite3.connect(SQLITE_PATH) as con:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    place TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_by INTEGER,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            con.commit()
 
 
-def db_add(kind: str, place: str, text: str, user_id: int | None) -> int:
-    created_at = datetime.now(tz=TZ).isoformat(timespec="seconds")
-    with sqlite3.connect(DB_PATH) as con:
+def db_add(kind: str, place: str, text: str, user_id: Optional[int]) -> int:
+    created_at = datetime.now(tz=TZ)
+
+    if DATABASE_URL:
+        with _pg_conn() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO items(kind, place, text, created_by, created_at) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                    (kind, place, text, user_id, created_at),
+                )
+                new_id = cur.fetchone()[0]
+            con.commit()
+            return int(new_id)
+
+    created_at_s = created_at.isoformat(timespec="seconds")
+    with sqlite3.connect(SQLITE_PATH) as con:
         cur = con.execute(
             "INSERT INTO items(kind, place, text, created_by, created_at) VALUES(?,?,?,?,?)",
-            (kind, place, text, user_id, created_at),
+            (kind, place, text, user_id, created_at_s),
         )
         con.commit()
-        return cur.lastrowid
+        return int(cur.lastrowid)
 
 
 def db_list(kind: str, place: str) -> list[tuple[int, str, str]]:
-    with sqlite3.connect(DB_PATH) as con:
+    if DATABASE_URL:
+        with _pg_conn() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT id, text, created_at FROM items WHERE kind=%s AND place=%s ORDER BY id ASC",
+                    (kind, place),
+                )
+                rows = cur.fetchall()
+        # created_at приводим к строке для форматирования
+        return [(int(r[0]), str(r[1]), r[2].isoformat(timespec="seconds")) for r in rows]
+
+    with sqlite3.connect(SQLITE_PATH) as con:
         cur = con.execute(
             "SELECT id, text, created_at FROM items WHERE kind=? AND place=? ORDER BY id ASC",
             (kind, place),
         )
-        return cur.fetchall()
+        return [(int(r[0]), str(r[1]), str(r[2])) for r in cur.fetchall()]
 
 
 def db_delete(item_id: int) -> bool:
-    with sqlite3.connect(DB_PATH) as con:
+    if DATABASE_URL:
+        with _pg_conn() as con:
+            with con.cursor() as cur:
+                cur.execute("DELETE FROM items WHERE id=%s", (item_id,))
+                deleted = cur.rowcount > 0
+            con.commit()
+            return deleted
+
+    with sqlite3.connect(SQLITE_PATH) as con:
         cur = con.execute("DELETE FROM items WHERE id=?", (item_id,))
         con.commit()
         return cur.rowcount > 0
@@ -166,7 +226,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
-    # category selection
     if ":kind:" in data:
         act, _kw, kind = data.split(":")
         context.user_data["act"] = act
@@ -183,7 +242,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb_main())
         return
 
-    # place selection
     if ":place:" in data:
         act, _place_kw, kind, place = data.split(":")
         context.user_data["act"] = act
@@ -241,7 +299,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # DEL flow by number (NO delete buttons)
+    # DEL flow by number
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         if text.isdigit():
             n = int(text)
