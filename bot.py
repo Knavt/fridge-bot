@@ -109,7 +109,7 @@ def db_add(kind: str, place: str, text: str, user_id: Optional[int]) -> int:
 
 
 def db_list(kind: str, place: str) -> list[tuple[int, str, str]]:
-    """List items for one place (used mainly for delete screen)."""
+    """List items for one place (used for delete screen)."""
     if DATABASE_URL:
         assert PG_POOL is not None
         with PG_POOL.connection() as con:
@@ -131,10 +131,7 @@ def db_list(kind: str, place: str) -> list[tuple[int, str, str]]:
 
 
 def db_list_all_places(kind: str) -> dict[str, list[tuple[int, str, str]]]:
-    """
-    One query for all places (fast).
-    Returns dict: place -> rows
-    """
+    """One query for all places (fast). Returns dict: place -> rows."""
     result: dict[str, list[tuple[int, str, str]]] = {p: [] for p in ("fridge", "kitchen", "freezer")}
 
     if DATABASE_URL:
@@ -183,12 +180,38 @@ def esc(s: str) -> str:
 
 
 def fmt_rows(rows: list[tuple[int, str, str]]) -> str:
+    """User-facing list WITHOUT internal DB ids."""
     if not rows:
         return "— (пусто)"
     out = []
-    for idx, (item_id, text, _created_at) in enumerate(rows, start=1):
-        out.append(f"<b>{idx}.</b> {esc(text)}  <i>(id:{item_id})</i>")
+    for idx, (_item_id, text, _created_at) in enumerate(rows, start=1):
+        out.append(f"<b>{idx}.</b> {esc(text)}")
     return "\n".join(out)
+
+
+def parse_lines_for_add(message_text: str) -> list[str]:
+    """Split multiline message into items, trim, remove empty lines."""
+    lines = []
+    for line in message_text.splitlines():
+        t = line.strip()
+        if t:
+            lines.append(t)
+    return lines
+
+
+def parse_numbers_for_delete(message_text: str) -> list[int]:
+    """
+    Accept: "1 4", "1,4", "1, 4  7" etc.
+    Returns sorted unique ints.
+    """
+    cleaned = message_text.replace(",", " ").replace(";", " ")
+    parts = [p.strip() for p in cleaned.split() if p.strip()]
+    nums = []
+    for p in parts:
+        if p.isdigit():
+            nums.append(int(p))
+    # unique + stable
+    return sorted(set(nums))
 
 
 # ---------------- Keyboards ----------------
@@ -197,6 +220,7 @@ def kb_main() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("➕ Добавить", callback_data="act:add")],
         [InlineKeyboardButton("➖ Удалить", callback_data="act:del")],
         [InlineKeyboardButton("❓ Что осталось?", callback_data="act:show")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="nav:main")],
     ])
 
 
@@ -204,7 +228,7 @@ def kb_kind(action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🍲 Готовые блюда", callback_data=f"{action}:kind:meal")],
         [InlineKeyboardButton("🥕 Ингредиенты", callback_data=f"{action}:kind:ingredient")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="nav:main")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="nav:main")],
     ])
 
 
@@ -214,18 +238,20 @@ def kb_place(action: str, kind: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Кухня", callback_data=f"{action}:place:{kind}:kitchen")],
         [InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer")],
         [InlineKeyboardButton("⬅️ Назад", callback_data=f"{action}:back_kind")],
-    ])
-
-
-def kb_back_to_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ В меню", callback_data="nav:main")]
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="nav:main")],
     ])
 
 
 def kb_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ Отмена", callback_data="nav:main")]
+        [InlineKeyboardButton("❌ Отмена", callback_data="nav:main")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="nav:main")],
+    ])
+
+
+def kb_back_to_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="nav:main")]
     ])
 
 
@@ -245,6 +271,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     data = q.data
 
+    # Hard "go to main menu" (like /start)
     if data == "nav:main":
         context.user_data.clear()
         await q.edit_message_text("Выбери действие:", reply_markup=kb_main())
@@ -289,7 +316,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if act == "add":
             await q.edit_message_text(
                 f"Добавление:\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
-                "Напиши название одним сообщением.\n"
+                "Напиши названия одним сообщением.\n"
+                "Можно несколько строк, например:\n"
+                "Суп\nРагу\n\n"
                 "Если передумал — нажми ❌ Отмена.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb_cancel(),
@@ -302,7 +331,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             msg = (
                 f"Удаление:\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
                 f"{fmt_rows(rows)}\n\n"
-                "Отправь номер строки, которую удалить (например: 2).\n"
+                "Отправь номер(а) строк для удаления.\n"
+                "Примеры: <b>2</b> или <b>1 4</b> или <b>1, 4</b>\n"
                 "Команда /cancel — отмена."
             )
             await q.edit_message_text(
@@ -319,51 +349,91 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
 
-    text = update.message.text.strip()
+    raw = update.message.text
 
-    # ADD flow
+    # ADD flow: multiline add
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
         uid = update.effective_user.id if update.effective_user else None
 
-        item_id = db_add(kind, place, text, uid)
+        items = parse_lines_for_add(raw)
+        if not items:
+            await update.message.reply_text("Пусто. Напиши хотя бы одну строку или /cancel.")
+            return
+
+        for t in items:
+            db_add(kind, place, t, uid)
+
         context.user_data.clear()
 
+        added_preview = "\n".join([f"• {esc(t)}" for t in items[:10]])
+        more = ""
+        if len(items) > 10:
+            more = f"\n…и ещё {len(items) - 10} строк(и)"
+
         await update.message.reply_text(
-            f"Добавил ✅\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n<i>(id:{item_id})</i>",
+            f"Добавил ✅ <b>{len(items)}</b> шт.\n"
+            f"<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
+            f"{added_preview}{more}",
             parse_mode=ParseMode.HTML,
             reply_markup=kb_main(),
         )
         return
 
-    # DEL flow by number
+    # DEL flow: delete multiple indices
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
-        if text.isdigit():
-            n = int(text)
-            rows = context.user_data.get("del_rows", [])
-            if 1 <= n <= len(rows):
-                item_id = rows[n - 1][0]
-                db_delete(item_id)
+        rows: list[tuple[int, str, str]] = context.user_data.get("del_rows", [])
+        nums = parse_numbers_for_delete(raw)
 
-                kind = context.user_data.get("kind")
-                place = context.user_data.get("place")
-                new_rows = db_list(kind, place)
-                context.user_data["del_rows"] = new_rows
+        if not nums:
+            await update.message.reply_text(
+                "Для удаления отправь номер(а) строк.\n"
+                "Примеры: 2 или 1 4 или 1, 4\n"
+                "Или /cancel чтобы отменить."
+            )
+            return
 
-                await update.message.reply_text(
-                    f"Удалил ✅\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n{fmt_rows(new_rows)}",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb_back_to_menu() if new_rows else kb_main(),
-                )
-                return
+        # Validate ranges
+        valid = [n for n in nums if 1 <= n <= len(rows)]
+        invalid = [n for n in nums if n < 1 or n > len(rows)]
+
+        if not valid:
+            await update.message.reply_text(
+                f"Номера вне диапазона. Сейчас доступно 1..{len(rows)}.\n"
+                "Попробуй ещё раз или /cancel."
+            )
+            return
+
+        # Delete by internal ids (use snapshot order)
+        # Delete in descending index order (not strictly necessary, but cleaner)
+        deleted_count = 0
+        for n in sorted(valid, reverse=True):
+            item_id = rows[n - 1][0]
+            if db_delete(item_id):
+                deleted_count += 1
+
+        kind = context.user_data.get("kind")
+        place = context.user_data.get("place")
+        new_rows = db_list(kind, place)
+        context.user_data["del_rows"] = new_rows
+
+        msg = (
+            f"Удалил ✅ <b>{deleted_count}</b> шт.\n"
+            f"<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
+            f"{fmt_rows(new_rows)}"
+        )
+        if invalid:
+            msg += f"\n\n<i>Игнорировал вне диапазона: {', '.join(map(str, invalid))}</i>"
 
         await update.message.reply_text(
-            "Для удаления отправь номер строки (например: 2).\n"
-            "Или /cancel чтобы отменить."
+            msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb_back_to_menu() if new_rows else kb_main(),
         )
         return
 
+    # Default fallback
     await update.message.reply_text("Выбери действие:", reply_markup=kb_main())
 
 
