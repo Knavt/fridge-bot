@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-# ---- Token loading (Railway env first, then local .env if exists) ----
+# ---------------- Token loading (Railway env first, then local .env) ----------------
 def get_bot_token() -> str:
     token = os.environ.get("BOT_TOKEN", "").strip()
     if token:
@@ -32,29 +32,29 @@ def get_bot_token() -> str:
 
 BOT_TOKEN = get_bot_token()
 
+# ---------------- Timezone ----------------
 TZ_NAME = os.environ.get("TZ", "Europe/Amsterdam").strip()
 TZ = ZoneInfo(TZ_NAME)
 
-# Если на Railway есть Postgres — используем его
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+# ---------------- Database config ----------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()  # set on Railway when Postgres is attached
+SQLITE_PATH = os.environ.get("DB_PATH", "fridge.db")       # local fallback
 
-# Локальный fallback (если DATABASE_URL нет)
-SQLITE_PATH = os.environ.get("DB_PATH", "fridge.db")
+# Postgres connection pool (fast!)
+PG_POOL = None
+if DATABASE_URL:
+    from psycopg_pool import ConnectionPool  # type: ignore
+    PG_POOL = ConnectionPool(conninfo=DATABASE_URL, min_size=1, max_size=5, timeout=10)
 
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
 PLACE_LABEL = {"fridge": "Холодильник", "kitchen": "Кухня", "freezer": "Морозилка"}
 
 
-# ---------------- DB (Postgres or SQLite) ----------------
-def _pg_conn():
-    # импортируем только если реально используем Postgres
-    import psycopg  # type: ignore
-    return psycopg.connect(DATABASE_URL)
-
-
+# ---------------- DB helpers ----------------
 def db_init() -> None:
     if DATABASE_URL:
-        with _pg_conn() as con:
+        assert PG_POOL is not None
+        with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS items (
@@ -86,10 +86,12 @@ def db_add(kind: str, place: str, text: str, user_id: Optional[int]) -> int:
     created_at = datetime.now(tz=TZ)
 
     if DATABASE_URL:
-        with _pg_conn() as con:
+        assert PG_POOL is not None
+        with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO items(kind, place, text, created_by, created_at) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO items(kind, place, text, created_by, created_at) "
+                    "VALUES (%s,%s,%s,%s,%s) RETURNING id",
                     (kind, place, text, user_id, created_at),
                 )
                 new_id = cur.fetchone()[0]
@@ -107,15 +109,17 @@ def db_add(kind: str, place: str, text: str, user_id: Optional[int]) -> int:
 
 
 def db_list(kind: str, place: str) -> list[tuple[int, str, str]]:
+    """List items for one place (used mainly for delete screen)."""
     if DATABASE_URL:
-        with _pg_conn() as con:
+        assert PG_POOL is not None
+        with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute(
-                    "SELECT id, text, created_at FROM items WHERE kind=%s AND place=%s ORDER BY id ASC",
+                    "SELECT id, text, created_at FROM items "
+                    "WHERE kind=%s AND place=%s ORDER BY id ASC",
                     (kind, place),
                 )
                 rows = cur.fetchall()
-        # created_at приводим к строке для форматирования
         return [(int(r[0]), str(r[1]), r[2].isoformat(timespec="seconds")) for r in rows]
 
     with sqlite3.connect(SQLITE_PATH) as con:
@@ -126,9 +130,41 @@ def db_list(kind: str, place: str) -> list[tuple[int, str, str]]:
         return [(int(r[0]), str(r[1]), str(r[2])) for r in cur.fetchall()]
 
 
+def db_list_all_places(kind: str) -> dict[str, list[tuple[int, str, str]]]:
+    """
+    One query for all places (fast).
+    Returns dict: place -> rows
+    """
+    result: dict[str, list[tuple[int, str, str]]] = {p: [] for p in ("fridge", "kitchen", "freezer")}
+
+    if DATABASE_URL:
+        assert PG_POOL is not None
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT place, id, text, created_at FROM items "
+                    "WHERE kind=%s ORDER BY place ASC, id ASC",
+                    (kind,),
+                )
+                rows = cur.fetchall()
+        for place, item_id, text, created_at in rows:
+            result[str(place)].append((int(item_id), str(text), created_at.isoformat(timespec="seconds")))
+        return result
+
+    with sqlite3.connect(SQLITE_PATH) as con:
+        cur = con.execute(
+            "SELECT place, id, text, created_at FROM items WHERE kind=? ORDER BY place ASC, id ASC",
+            (kind,),
+        )
+        for place, item_id, text, created_at in cur.fetchall():
+            result[str(place)].append((int(item_id), str(text), str(created_at)))
+    return result
+
+
 def db_delete(item_id: int) -> bool:
     if DATABASE_URL:
-        with _pg_conn() as con:
+        assert PG_POOL is not None
+        with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute("DELETE FROM items WHERE id=%s", (item_id,))
                 deleted = cur.rowcount > 0
@@ -141,7 +177,7 @@ def db_delete(item_id: int) -> bool:
         return cur.rowcount > 0
 
 
-# -------------- UI helpers --------------
+# ---------------- UI helpers ----------------
 def esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -155,7 +191,7 @@ def fmt_rows(rows: list[tuple[int, str, str]]) -> str:
     return "\n".join(out)
 
 
-# -------------- Keyboards --------------
+# ---------------- Keyboards ----------------
 def kb_main() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить", callback_data="act:add")],
@@ -226,6 +262,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
+    # Category selection
     if ":kind:" in data:
         act, _kw, kind = data.split(":")
         context.user_data["act"] = act
@@ -234,14 +271,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if act in ("add", "del"):
             await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
         elif act == "show":
+            allp = db_list_all_places(kind)  # ONE QUERY
             blocks = []
             for place in ("fridge", "kitchen", "freezer"):
-                rows = db_list(kind, place)
-                blocks.append(f"<b>{PLACE_LABEL[place]}</b>\n{fmt_rows(rows)}")
+                blocks.append(f"<b>{PLACE_LABEL[place]}</b>\n{fmt_rows(allp[place])}")
             text = f"Остатки: <b>{KIND_LABEL[kind]}</b>\n\n" + "\n\n".join(blocks)
             await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb_main())
         return
 
+    # Place selection
     if ":place:" in data:
         act, _place_kw, kind, place = data.split(":")
         context.user_data["act"] = act
@@ -293,7 +331,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context.user_data.clear()
 
         await update.message.reply_text(
-            f"Добавил ✅\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n<i>id:{item_id}</i>",
+            f"Добавил ✅\n<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n<i>(id:{item_id})</i>",
             parse_mode=ParseMode.HTML,
             reply_markup=kb_main(),
         )
