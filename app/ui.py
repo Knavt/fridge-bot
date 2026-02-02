@@ -33,15 +33,14 @@ def kb_place(action: str, kind: str):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🧊 Холодильник", callback_data=f"{action}:place:{kind}:fridge"),
-            InlineKeyboardButton("🏠 Кухня", callback_data=f"{action}:place:{kind}:kitchen"),
+            InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer"),
         ],
         [
-            InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer"),
+            InlineKeyboardButton("🏠 Кухня", callback_data=f"{action}:place:{kind}:kitchen"),
             InlineKeyboardButton("⬅️ Назад", callback_data=f"{action}:back_kind"),
         ],
         [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
-
 
 def kb_photo_kind():
     # Выбор типа для фото-распознавания
@@ -70,3 +69,5 @@ def kb_confirm_photo():
         ],
         [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
+
+

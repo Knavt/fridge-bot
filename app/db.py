@@ -1,7 +1,7 @@
 # app/db.py
 import sqlite3
 from datetime import datetime
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 
 from app.config import (
     DATABASE_URL,
@@ -73,48 +73,55 @@ def db_add(kind: str, place: str, text: str) -> None:
             con.commit()
 
 
-def db_list(kind: str, place: str) -> List[Tuple[int, str]]:
-    """Rows for one (kind, place) ordered by id."""
+DbDateValue = Union[str, datetime]
+
+
+def db_list(kind: str, place: str) -> List[Tuple[int, str, DbDateValue]]:
+    """Rows for one (kind, place) ordered by created_at."""
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute(
-                    "SELECT id, text FROM items WHERE kind=%s AND place=%s ORDER BY id",
+                    "SELECT id, text, created_at FROM items WHERE kind=%s AND place=%s "
+                    "ORDER BY created_at ASC, id ASC",
                     (kind, place),
                 )
-                return [(int(a), str(b)) for a, b in cur.fetchall()]
+                return [(int(a), str(b), c) for a, b, c in cur.fetchall()]
 
     with sqlite3.connect(SQLITE_PATH) as con:
         cur = con.execute(
-            "SELECT id, text FROM items WHERE kind=? AND place=? ORDER BY id",
+            "SELECT id, text, created_at FROM items WHERE kind=? AND place=? "
+            "ORDER BY created_at ASC, id ASC",
             (kind, place),
         )
-        return [(int(a), str(b)) for a, b in cur.fetchall()]
+        return [(int(a), str(b), str(c)) for a, b, c in cur.fetchall()]
 
 
-def db_list_all(kind: str) -> Dict[str, List[Tuple[int, str]]]:
+def db_list_all(kind: str) -> Dict[str, List[Tuple[int, str, DbDateValue]]]:
     """All rows for kind grouped by place."""
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
                 cur.execute(
-                    "SELECT place, id, text FROM items WHERE kind=%s ORDER BY place ASC, id ASC",
+                    "SELECT place, id, text, created_at FROM items WHERE kind=%s "
+                    "ORDER BY place ASC, created_at ASC, id ASC",
                     (kind,),
                 )
                 rows = cur.fetchall()
     else:
         with sqlite3.connect(SQLITE_PATH) as con:
             cur = con.execute(
-                "SELECT place, id, text FROM items WHERE kind=? ORDER BY place ASC, id ASC",
+                "SELECT place, id, text, created_at FROM items WHERE kind=? "
+                "ORDER BY place ASC, created_at ASC, id ASC",
                 (kind,),
             )
             rows = cur.fetchall()
 
-    out: Dict[str, List[Tuple[int, str]]] = {p: [] for p in VALID_PLACES}
-    for place, item_id, text in rows:
+    out: Dict[str, List[Tuple[int, str, DbDateValue]]] = {p: [] for p in VALID_PLACES}
+    for place, item_id, text, created_at in rows:
         p = str(place)
         if p in out:
-            out[p].append((int(item_id), str(text)))
+            out[p].append((int(item_id), str(text), created_at))
     return out
 
 

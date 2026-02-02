@@ -1,4 +1,5 @@
-from typing import List, Tuple
+from datetime import datetime
+from typing import List, Tuple, Union
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -47,14 +48,33 @@ from app.ai import (
 )
 
 
-def fmt_rows(rows: List[Tuple[int, str]]) -> str:
+DbDateValue = Union[str, datetime]
+
+
+def _fmt_date(value: DbDateValue) -> str:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return ""
+    else:
+        return ""
+    return dt.strftime("%d.%m.%Y")
+
+
+def fmt_rows(rows: List[Tuple[int, str, DbDateValue]]) -> str:
     if not rows:
         return "— (пусто)"
     out = []
-    for i, (_id, text) in enumerate(rows, start=1):
-        out.append(f"<b>{i}.</b> {esc(text)}")
+    for i, (_id, text, created_at) in enumerate(rows, start=1):
+        date_str = _fmt_date(created_at)
+        if date_str:
+            out.append(f"<b>{i}.</b> {esc(text)} — {date_str}")
+        else:
+            out.append(f"<b>{i}.</b> {esc(text)}")
     return "\n".join(out)
-
 
 def find_matches(rows: List[Tuple[int, str, str, str]], query: str):
     """
@@ -457,3 +477,6 @@ def build_app() -> Application:
     app.add_error_handler(on_error)
 
     return app
+
+
+

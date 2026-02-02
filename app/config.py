@@ -9,7 +9,8 @@ SQLITE_PATH = "fridge.db"
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Amsterdam").strip())
 
 VALID_KINDS = ("meal", "ingredient")
-VALID_PLACES = ("fridge", "kitchen", "freezer")
+VALID_PLACES = ("fridge", "freezer", "kitchen")
 
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
 PLACE_LABEL = {"fridge": "Холодильник", "kitchen": "Кухня", "freezer": "Морозилка"}
+
