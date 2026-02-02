@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,72 +14,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
-# ================== OPENAI ==================
-from openai import OpenAI
-OPENAI_CLIENT = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-AI_SYSTEM_PROMPT = """
-Ты помощник телеграм-бота для учета еды.
-
-Твоя задача:
-— понять намерение пользователя
-— вернуть ТОЛЬКО JSON
-— без пояснений, без текста вне JSON
-
-Возможные action:
-- add
-- delete
-- unknown
-
-kind:
-- meal
-- ingredient
-
-place:
-- fridge
-- kitchen
-- freezer
-
-Если не уверен — action = "unknown".
-
-Примеры:
-
-Ввод:
-"Купили курицу и молоко, положили в холодильник"
-Ответ:
-{
-  "action": "add",
-  "kind": "ingredient",
-  "place": "fridge",
-  "items": ["курица", "молоко"]
-}
-
-Ввод:
-"Съели суп и рагу"
-Ответ:
-{
-  "action": "delete",
-  "items": ["суп", "рагу"]
-}
-"""
-
-
-def ai_parse_text(text: str) -> dict:
-    try:
-        resp = OPENAI_CLIENT.chat.completions.create(
-            model="gpt-5-nano",
-            messages=[
-                {"role": "system", "content": AI_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            temperature=0,
-        )
-        content = resp.choices[0].message.content.strip()
-        return json.loads(content)
-    except Exception:
-        return {"action": "unknown"}
-
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -170,25 +103,63 @@ def db_delete(item_id):
             con.commit()
 
 
+# ================== AI (SAFE) ==================
+AI_SYSTEM_PROMPT = """
+Ты помощник телеграм-бота для учета еды.
+
+Верни ТОЛЬКО JSON.
+Без пояснений.
+
+action:
+- add
+- delete
+- unknown
+
+kind: meal | ingredient
+place: fridge | kitchen | freezer
+"""
+
+def ai_parse_text(text: str) -> dict:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return {"action": "unknown"}
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+
+        resp = client.chat.completions.create(
+            model="gpt-5-nano",
+            messages=[
+                {"role": "system", "content": AI_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+        )
+
+        return json.loads(resp.choices[0].message.content.strip())
+    except Exception as e:
+        print("AI error:", e)
+        return {"action": "unknown"}
+
+
 # ================== UI ==================
 def kb_main():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить", callback_data="add")],
-        [InlineKeyboardButton("➖ Удалить", callback_data="del")],
+        [InlineKeyboardButton("➕ Добавить", callback_data="noop")],
+        [InlineKeyboardButton("➖ Удалить", callback_data="noop")],
         [InlineKeyboardButton("❓ Что осталось?", callback_data="show")],
     ])
 
 
 # ================== HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
     await update.message.reply_text("Главное меню:", reply_markup=kb_main())
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # --- AI block ---
     ai = ai_parse_text(text)
 
     if ai.get("action") == "add":
@@ -217,7 +188,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🤖 Удалил {deleted} шт.")
         return
 
-    # --- fallback ---
     await update.message.reply_text("Не понял. Используй кнопки 👇", reply_markup=kb_main())
 
 
@@ -240,13 +210,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== MAIN ==================
 def main():
+    print("OPENAI_API_KEY present:", bool(os.environ.get("OPENAI_API_KEY")))
     db_init()
-    app = Application.builder().token(BOT_TOKEN).build()
 
+    app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
     app.run_polling()
 
 
