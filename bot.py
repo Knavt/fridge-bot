@@ -188,7 +188,7 @@ def ai_parse(text: str) -> dict:
         client = OpenAI(api_key=api_key)
 
         resp = client.responses.create(
-            model="gpt-5-nano",
+            model="gpt-4o-mini",
             input=[
                 {
                     "role": "system",
