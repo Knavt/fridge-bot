@@ -159,6 +159,19 @@ def db_all_raw() -> List[Tuple[int, str, str, str]]:
         return [(int(a), str(b), str(c), str(d)) for a, b, c, d in cur.fetchall()]
 
 
+def db_all_raw_with_date() -> List[Tuple[int, str, str, str, DbDateValue]]:
+    """All rows with dates: (id, kind, place, text, created_at)."""
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute("SELECT id, kind, place, text, created_at FROM items ORDER BY id")
+                return [(int(a), str(b), str(c), str(d), e) for a, b, c, d, e in cur.fetchall()]
+
+    with sqlite3.connect(SQLITE_PATH) as con:
+        cur = con.execute("SELECT id, kind, place, text, created_at FROM items ORDER BY id")
+        return [(int(a), str(b), str(c), str(d), str(e)) for a, b, c, d, e in cur.fetchall()]
+
+
 def db_delete(item_id: int) -> None:
     if PG_POOL:
         with PG_POOL.connection() as con:

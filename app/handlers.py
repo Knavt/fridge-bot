@@ -55,6 +55,7 @@ from app.db import (
     db_list_all,
     db_list_place,
     db_all_raw,
+    db_all_raw_with_date,
     db_delete,
     db_update_text,
     db_update_created_at,
@@ -229,6 +230,53 @@ def find_matches(rows: List[Tuple[int, str, str, str]], query: str):
         tt = norm(t)
         if q in tt or tt in q:
             subs.append((item_id, t))
+    return subs
+
+
+def _extract_query(text: str) -> str:
+    raw = (text or "").lower().strip()
+    if not raw:
+        return ""
+
+    prefixes = [
+        "есть ли у нас",
+        "осталась ли у нас",
+        "осталось ли у нас",
+        "у нас есть ли",
+        "у нас осталась ли",
+        "у нас осталось ли",
+        "есть ли",
+        "осталась ли",
+        "осталось ли",
+    ]
+    for p in prefixes:
+        if raw.startswith(p):
+            return raw[len(p):].strip(" ?!.,")
+
+    for p in ("есть ли", "осталась ли", "осталось ли"):
+        if p in raw:
+            return raw.split(p, 1)[1].strip(" ?!.,")
+
+    if raw.endswith("?"):
+        return raw.strip(" ?!.,")
+
+    return ""
+
+
+def _find_query_matches(rows: List[Tuple[int, str, str, str, DbDateValue]], query: str):
+    q = norm(query)
+    if not q:
+        return []
+
+    exact = [r for r in rows if norm(r[3]) == q]
+    if exact:
+        return exact
+
+    subs = []
+    for r in rows:
+        tt = norm(r[3])
+        if q in tt or tt in q:
+            subs.append(r)
     return subs
 
 
@@ -658,6 +706,25 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["del_rows"] = db_list(kind, place)
 
         await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=_main_kb(update))
+        return
+
+    # Query: "есть ли ..."
+    query = _extract_query(text)
+    if query:
+        rows = db_all_raw_with_date()
+        matches = _find_query_matches(rows, query)
+        if not matches:
+            await update.message.reply_text("Похоже, этого нет в списке.", reply_markup=_main_kb(update))
+            return
+
+        lines = ["Нашёл:"]
+        for _id, kind, place, item_text, created_at in matches[:20]:
+            date_str = _fmt_date(created_at)
+            extra = f" — {date_str}" if date_str else ""
+            lines.append(
+                f"• {esc(item_text)} — {PLACE_LABEL.get(place, place)} — {KIND_LABEL.get(kind, kind)}{extra}"
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=_main_kb(update))
         return
 
     # AI free-text
