@@ -1,9 +1,9 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def kb_main():
-    # 2 столбца, 3 ряда
-    return InlineKeyboardMarkup([
+def kb_main(is_admin: bool = False):
+    # 2 столбца, 3 ряда (без админ-кнопки)
+    rows = [
         [
             InlineKeyboardButton("➕ Добавить", callback_data="act:add"),
             InlineKeyboardButton("➖ Удалить", callback_data="act:del"),
@@ -12,11 +12,20 @@ def kb_main():
             InlineKeyboardButton("❓ Что осталось?", callback_data="act:show"),
             InlineKeyboardButton("📷 Добавить по фото", callback_data="act:photo"),
         ],
-        [
-            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
-            InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel"),
-        ],
-    ])
+    ]
+    if is_admin:
+        rows.append(
+            [
+                InlineKeyboardButton("✏️ Редактировать", callback_data="act:edit"),
+                InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
+            ]
+        )
+    else:
+        rows.append(
+            [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")]
+        )
+    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def kb_kind(action: str):
@@ -67,6 +76,17 @@ def kb_confirm_photo():
             InlineKeyboardButton("✅ Подтвердить", callback_data="photo:confirm"),
             InlineKeyboardButton("❌ Отмена", callback_data="photo:cancel"),
         ],
+        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
+    ])
+
+
+def kb_edit_field():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✏️ Название", callback_data="edit:field:text"),
+            InlineKeyboardButton("📅 Дата", callback_data="edit:field:date"),
+        ],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="edit:back_place")],
         [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
 

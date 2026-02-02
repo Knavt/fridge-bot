@@ -169,3 +169,33 @@ def db_delete(item_id: int) -> None:
         with sqlite3.connect(SQLITE_PATH) as con:
             con.execute("DELETE FROM items WHERE id=?", (item_id,))
             con.commit()
+
+
+def db_update_text(item_id: int, text: str) -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute("UPDATE items SET text=%s WHERE id=%s", (text, item_id))
+            con.commit()
+    else:
+        with sqlite3.connect(SQLITE_PATH) as con:
+            con.execute("UPDATE items SET text=? WHERE id=?", (text, item_id))
+            con.commit()
+
+
+def db_update_created_at(item_id: int, created_at: datetime) -> None:
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute("UPDATE items SET created_at=%s WHERE id=%s", (created_at, item_id))
+            con.commit()
+    else:
+        with sqlite3.connect(SQLITE_PATH) as con:
+            con.execute(
+                "UPDATE items SET created_at=? WHERE id=?",
+                (created_at.isoformat(timespec="seconds"), item_id),
+            )
+            con.commit()
