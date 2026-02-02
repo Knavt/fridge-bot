@@ -204,6 +204,20 @@ async def ai_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"AI_TEST: {res}")
 
 
+async def morning_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not MORNING_CHAT_ID:
+        await update.message.reply_text("MORNING_CHAT_ID не задан.")
+        return
+    items = db_list_place("fridge")
+    msg = _build_morning_message(items)
+    await context.bot.send_message(
+        chat_id=MORNING_CHAT_ID,
+        text=msg,
+        message_thread_id=MORNING_THREAD_ID,
+    )
+    await update.message.reply_text("Отправил тестовое утреннее сообщение.")
+
+
 # ================= CALLBACKS =================
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -552,6 +566,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("env", env_cmd))
     app.add_handler(CommandHandler("ai_test", ai_test))
+    app.add_handler(CommandHandler("morning_test", morning_test))
 
     app.add_handler(CallbackQueryHandler(on_button))
 
