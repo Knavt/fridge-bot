@@ -589,11 +589,14 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     if MORNING_CHAT_ID:
-        app.job_queue.run_daily(
-            morning_job,
-            time=time(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=MORNING_TZ),
-            name="morning_reminder",
-        )
+        if app.job_queue is None:
+            print("JobQueue not available: install python-telegram-bot[job-queue]")
+        else:
+            app.job_queue.run_daily(
+                morning_job,
+                time=time(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=MORNING_TZ),
+                name="morning_reminder",
+            )
 
     app.add_error_handler(on_error)
 
