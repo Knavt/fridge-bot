@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, time
+import random
 from typing import List, Tuple, Union
 
 from telegram import Update
@@ -19,6 +20,11 @@ from app.config import (
     VALID_PLACES,
     KIND_LABEL,
     PLACE_LABEL,
+    MORNING_CHAT_ID,
+    MORNING_THREAD_ID,
+    MORNING_TZ,
+    MORNING_HOUR,
+    MORNING_MINUTE,
 )
 from app.ui import (
     kb_main,
@@ -39,6 +45,7 @@ from app.db import (
     db_add,
     db_list,
     db_list_all,
+    db_list_place,
     db_all_raw,
     db_delete,
 )
@@ -46,6 +53,7 @@ from app.ai import (
     ai_parse_text,
     ai_parse_photo,
 )
+from app.welcome import WELCOME_TEXT
 
 
 DbDateValue = Union[str, datetime]
@@ -76,6 +84,83 @@ def fmt_rows(rows: List[Tuple[int, str, DbDateValue]]) -> str:
             out.append(f"<b>{i}.</b> {esc(text)}")
     return "\n".join(out)
 
+
+def _coerce_dt(value: DbDateValue) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=MORNING_TZ)
+    return dt.astimezone(MORNING_TZ)
+
+
+def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
+    now = datetime.now(tz=MORNING_TZ)
+    entries: List[Tuple[int, str, str]] = []
+    for kind, text, created_at in items:
+        dt = _coerce_dt(created_at)
+        if not dt:
+            continue
+        days = (now.date() - dt.date()).days
+        entries.append((days, kind, text))
+
+    entries.sort(key=lambda x: (-x[0], x[2].lower()))
+
+    greetings = [
+        "Доброе утро! ☀️",
+        "Доброе утро! Пора заглянуть в холодильник 🙂",
+        "Доброе утро! Держу в курсе про еду 🧺",
+    ]
+    take_prefix = [
+        "Возьми с собой на работу:",
+        "Можно взять на работу:",
+        "На работу сегодня подойдет:",
+    ]
+    warn_prefix = [
+        "Пора доесть — уже 3 дня и больше:",
+        "Напоминание: этим продуктам уже 3+ дня:",
+        "Не забудьте скушать, им уже 3+ дня:",
+    ]
+
+    lines = [random.choice(greetings)]
+
+    if not entries:
+        lines.append("В холодильнике пока пусто. Можно добавить продукты через меню.")
+        return "\n".join(lines)
+
+    take_items = entries[:3]
+    take_list = ", ".join([f"{t} ({d} дн.)" for d, _k, t in take_items])
+    lines.append(f"{random.choice(take_prefix)} {take_list}")
+
+    old_items = [e for e in entries if e[0] >= 3]
+    if old_items:
+        lines.append(random.choice(warn_prefix))
+        for days, _kind, text in old_items[:10]:
+            lines.append(f"• {text} — {days} дн. назад")
+    else:
+        lines.append("Пока нет продуктов старше 3 дней.")
+
+    return "\n".join(lines)
+
+
+async def morning_job(context: ContextTypes.DEFAULT_TYPE):
+    if not MORNING_CHAT_ID:
+        return
+    items = db_list_place("fridge")
+    msg = _build_morning_message(items)
+    await context.bot.send_message(
+        chat_id=MORNING_CHAT_ID,
+        text=msg,
+        message_thread_id=MORNING_THREAD_ID,
+    )
+
 def find_matches(rows: List[Tuple[int, str, str, str]], query: str):
     """
     rows: (id, kind, place, text)
@@ -101,12 +186,12 @@ def find_matches(rows: List[Tuple[int, str, str, str]], query: str):
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Главное меню:", reply_markup=kb_main())
+    await update.message.reply_text(WELCOME_TEXT, reply_markup=kb_main())
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Ок, отмена. Главное меню:", reply_markup=kb_main())
+    await update.message.reply_text(WELCOME_TEXT, reply_markup=kb_main())
 
 
 async def env_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,12 +213,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---- Global nav
     if data == "nav:main":
         context.user_data.clear()
-        await q.edit_message_text("Главное меню:", reply_markup=kb_main())
+        await q.edit_message_text(WELCOME_TEXT, reply_markup=kb_main())
         return
 
     if data == "nav:cancel":
         context.user_data.clear()
-        await q.edit_message_text("Отменил. Главное меню:", reply_markup=kb_main())
+        await q.edit_message_text(WELCOME_TEXT, reply_markup=kb_main())
         return
 
     # ---- Photo flow entry
@@ -166,14 +251,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "photo:cancel":
         # отмена подтверждения -> возвращаемся в меню
         context.user_data.clear()
-        await q.edit_message_text("Ок, отменил. Главное меню:", reply_markup=kb_main())
+        await q.edit_message_text(WELCOME_TEXT, reply_markup=kb_main())
         return
 
     if data == "photo:confirm":
         pending = context.user_data.get("pending_photo")
         if not pending:
             context.user_data.clear()
-            await q.edit_message_text("Нечего подтверждать. Главное меню:", reply_markup=kb_main())
+            await q.edit_message_text(WELCOME_TEXT, reply_markup=kb_main())
             return
 
         kind = pending.get("kind", "ingredient")
@@ -260,7 +345,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb_main())
             return
 
-    await q.edit_message_text("Не понял кнопку. Главное меню:", reply_markup=kb_main())
+    await q.edit_message_text(WELCOME_TEXT, reply_markup=kb_main())
 
 
 # ================= TEXT HANDLER =================
@@ -473,6 +558,13 @@ def build_app() -> Application:
     # photo handler before text handler
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+
+    if MORNING_CHAT_ID:
+        app.job_queue.run_daily(
+            morning_job,
+            time=time(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=MORNING_TZ),
+            name="morning_reminder",
+        )
 
     app.add_error_handler(on_error)
 

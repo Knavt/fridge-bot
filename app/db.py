@@ -125,6 +125,27 @@ def db_list_all(kind: str) -> Dict[str, List[Tuple[int, str, DbDateValue]]]:
     return out
 
 
+def db_list_place(place: str) -> List[Tuple[str, str, DbDateValue]]:
+    """Rows for one place across kinds ordered by created_at."""
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT kind, text, created_at FROM items WHERE place=%s "
+                    "ORDER BY created_at ASC, id ASC",
+                    (place,),
+                )
+                return [(str(a), str(b), c) for a, b, c in cur.fetchall()]
+
+    with sqlite3.connect(SQLITE_PATH) as con:
+        cur = con.execute(
+            "SELECT kind, text, created_at FROM items WHERE place=? "
+            "ORDER BY created_at ASC, id ASC",
+            (place,),
+        )
+        return [(str(a), str(b), str(c)) for a, b, c in cur.fetchall()]
+
+
 def db_all_raw() -> List[Tuple[int, str, str, str]]:
     """All rows for AI delete matching: (id, kind, place, text)."""
     if PG_POOL:
