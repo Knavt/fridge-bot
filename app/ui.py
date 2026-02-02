@@ -1,6 +1,8 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+
 def kb_main():
+    # 2 столбца, 3 ряда
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("➕ Добавить", callback_data="act:add"),
@@ -11,10 +13,11 @@ def kb_main():
             InlineKeyboardButton("📷 Добавить по фото", callback_data="act:photo"),
         ],
         [
-            InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel"),
             InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
+            InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel"),
         ],
     ])
+
 
 def kb_kind(action: str):
     return InlineKeyboardMarkup([
@@ -22,8 +25,9 @@ def kb_kind(action: str):
             InlineKeyboardButton("🍲 Готовые блюда", callback_data=f"{action}:kind:meal"),
             InlineKeyboardButton("🥕 Ингредиенты", callback_data=f"{action}:kind:ingredient"),
         ],
-        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="nav:main")],
     ])
+
 
 def kb_place(action: str, kind: str):
     return InlineKeyboardMarkup([
@@ -38,14 +42,25 @@ def kb_place(action: str, kind: str):
         [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
 
+
 def kb_photo_kind():
+    # Выбор типа для фото-распознавания
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🍲 Готовое блюдо", callback_data="photo:kind:meal"),
             InlineKeyboardButton("🥕 Ингредиент", callback_data="photo:kind:ingredient"),
         ],
-        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="nav:main")],
     ])
+
+
+def kb_photo_wait_back():
+    # На шаге "пришлите фото" должна быть ОДНА кнопка "назад"
+    # Возвращаем к выбору типа фото
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data="act:photo")]
+    ])
+
 
 def kb_confirm_photo():
     return InlineKeyboardMarkup([

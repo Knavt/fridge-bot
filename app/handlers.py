@@ -1,5 +1,4 @@
-# app/handlers.py
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -25,6 +24,7 @@ from app.ui import (
     kb_kind,
     kb_place,
     kb_photo_kind,
+    kb_photo_wait_back,
     kb_confirm_photo,
 )
 from app.utils import (
@@ -105,7 +105,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
 
-    # Main navigation
+    # ---- Global nav
     if data == "nav:main":
         context.user_data.clear()
         await q.edit_message_text("Главное меню:", reply_markup=kb_main())
@@ -116,14 +116,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Отменил. Главное меню:", reply_markup=kb_main())
         return
 
-    # Photo flow entry
+    # ---- Photo flow entry
     if data == "act:photo":
+        # Если мы были в ожидании фото — тоже возвращаемся сюда
         context.user_data.clear()
         context.user_data["photo_mode"] = "choose_kind"
         await q.edit_message_text("Фото-распознавание: выбери тип:", reply_markup=kb_photo_kind())
         return
 
-    # Photo kind selected
+    # ---- Photo kind selected
     if data.startswith("photo:kind:"):
         _, _, kind = data.split(":")
         if kind not in VALID_KINDS:
@@ -131,24 +132,27 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data["photo_mode"] = "wait_photo"
         context.user_data["photo_kind"] = kind
+
+        # ВАЖНО: здесь показываем ТОЛЬКО "Назад"
         await q.edit_message_text(
-            f"Ок. Тип: <b>{KIND_LABEL[kind]}</b>\n\nТеперь пришли <b>фото</b> одним сообщением.",
+            f"Ок. Тип: <b>{KIND_LABEL[kind]}</b>\n\n"
+            f"Теперь пришли <b>фото</b> одним сообщением.",
             parse_mode=ParseMode.HTML,
-            reply_markup=kb_main(),
+            reply_markup=kb_photo_wait_back(),
         )
         return
 
-    # Photo confirm/cancel
+    # ---- Photo confirm/cancel
     if data == "photo:cancel":
-        context.user_data.pop("pending_photo", None)
-        context.user_data.pop("photo_mode", None)
-        context.user_data.pop("photo_kind", None)
+        # отмена подтверждения -> возвращаемся в меню
+        context.user_data.clear()
         await q.edit_message_text("Ок, отменил. Главное меню:", reply_markup=kb_main())
         return
 
     if data == "photo:confirm":
         pending = context.user_data.get("pending_photo")
         if not pending:
+            context.user_data.clear()
             await q.edit_message_text("Нечего подтверждать. Главное меню:", reply_markup=kb_main())
             return
 
@@ -176,9 +180,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Standard flows
+    # ---- Standard flows
     if data.startswith("act:"):
-        act = data.split(":", 1)[1]  # add / del / show / photo
+        act = data.split(":", 1)[1]  # add / del / show
         context.user_data.clear()
         context.user_data["act"] = act
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
@@ -244,16 +248,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = update.message.text or ""
     text = raw.strip()
 
-    # Strict: if waiting for photo, reject any text
+    # Строго: если ждём фото — текст не принимаем, и показываем только "Назад"
     if context.user_data.get("photo_mode") == "wait_photo":
         kind = context.user_data.get("photo_kind", "ingredient")
         await update.message.reply_text(
-            f"Сейчас жду фото для: {KIND_LABEL.get(kind, kind)}.\nПришли фото одним сообщением или нажми Отмена.",
-            reply_markup=kb_main(),
+            f"Сейчас жду <b>фото</b> для: <b>{KIND_LABEL.get(kind, kind)}</b>.\n"
+            f"Пришли фото одним сообщением.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb_photo_wait_back(),
         )
         return
 
-    # Manual ADD flow
+    # Manual ADD
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
@@ -267,7 +273,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Добавил ✅ {len(items)} шт.", reply_markup=kb_main())
         return
 
-    # Manual DEL flow
+    # Manual DEL
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         nums = parse_delete_nums(text)
         rows = context.user_data.get("del_rows", [])
@@ -376,7 +382,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= PHOTO HANDLER =================
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Strict: photo only when bot asked
+    # Строго: фото принимаем только когда бот просил
     if context.user_data.get("photo_mode") != "wait_photo":
         await update.message.reply_text(
             "Фото сейчас не принимаю.\nНажми «📷 Добавить по фото» и следуй шагам.",
@@ -397,16 +403,16 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items = []
     items = [str(x).strip() for x in items if str(x).strip()]
 
-    # Enforce single item for meal
+    # meal -> single dish
     if kind == "meal":
         items = items[:1]
 
     if not items:
         await update.message.reply_text(
-            "По фото не смог уверенно распознать.\nПопробуй другое фото (крупнее/светлее) или добавь текстом.",
-            reply_markup=kb_main(),
+            "По фото не смог уверенно распознать.\nПопробуй другое фото.",
+            reply_markup=kb_photo_wait_back(),  # только назад
         )
-        return  # stay in wait_photo mode
+        return
 
     context.user_data["pending_photo"] = {
         "kind": kind,
@@ -421,6 +427,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{preview}\n\n"
         f"Подтвердить?"
     )
+
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb_confirm_photo())
 
 
@@ -443,7 +450,7 @@ def build_app() -> Application:
 
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # IMPORTANT: photo handler before text handler
+    # photo handler before text handler
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
