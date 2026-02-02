@@ -3,3 +3,4 @@ python-dotenv==1.0.1
 tzdata==2025.1
 psycopg[binary]==3.2.9
 psycopg-pool==3.2.6
+openai>=1.40.0
