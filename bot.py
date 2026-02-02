@@ -142,20 +142,16 @@ def db_delete(item_id: int):
             con.commit()
 
 
-# ================= AI =================
+# ================= AI (Responses API, GPT-5 nano) =================
 AI_PROMPT = """
 Ты помощник телеграм-бота учета еды.
 
 Верни ТОЛЬКО JSON. Без текста вне JSON.
 
-action:
-- add
-- delete
-- unknown
-
+action: add | delete | unknown
 kind: meal | ingredient
 place: fridge | kitchen | freezer
-items: список названий
+items: список названий (строки)
 
 Синонимы места:
 - "холодос", "холодильник" -> fridge
@@ -167,6 +163,21 @@ items: список названий
 Если есть явное действие ("добавь"/"положи"/"купили"/"закинь" или "съели"/"удали"/"убери"/"кончилось") — НЕ возвращай unknown.
 """
 
+AI_SCHEMA = {
+    "name": "fridge_action",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {"type": "string", "enum": ["add", "delete", "unknown"]},
+            "kind": {"type": "string", "enum": ["meal", "ingredient"]},
+            "place": {"type": "string", "enum": ["fridge", "kitchen", "freezer"]},
+            "items": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["action"]
+    }
+}
+
 def ai_parse(text: str) -> dict:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -176,16 +187,24 @@ def ai_parse(text: str) -> dict:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
 
-        r = client.chat.completions.create(
+        # Responses API — рекомендовано для GPT-5
+        resp = client.responses.create(
             model="gpt-5-nano",
-            messages=[
+            input=[
                 {"role": "system", "content": AI_PROMPT},
                 {"role": "user", "content": text},
             ],
-            temperature=0,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": AI_SCHEMA
+                }
+            },
+            max_output_tokens=200,
         )
-        content = r.choices[0].message.content.strip()
-        result = json.loads(content)
+
+        out = (resp.output_text or "").strip()
+        result = json.loads(out) if out else {"action": "unknown"}
         print("AI parsed:", result)
         return result
     except Exception as e:
@@ -270,8 +289,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, отмена. Главное меню:", reply_markup=kb_main())
 
 
+async def env_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # не показываем ключ, только факт наличия
+    present = bool(os.environ.get("OPENAI_API_KEY"))
+    await update.message.reply_text(f"OPENAI_API_KEY present: {present}")
+
+
 async def ai_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Небольшой тест, чтобы убедиться, что OpenAI реально вызывается
     res = ai_parse("Добавь молоко и яйца в холодильник")
     await update.message.reply_text(f"AI_TEST: {res}")
 
@@ -352,7 +376,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = update.message.text or ""
     text = raw.strip()
 
-    # 1) ADD flow
+    # ADD flow
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
@@ -366,7 +390,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Добавил ✅ {len(items)} шт.", reply_markup=kb_main())
         return
 
-    # 2) DEL flow
+    # DEL flow
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         nums = parse_delete_nums(text)
         rows = context.user_data.get("del_rows", [])
@@ -394,7 +418,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=kb_main())
         return
 
-    # 3) Free text -> AI
+    # Free text -> AI
     ai = ai_parse(text)
     action = ai.get("action", "unknown")
 
@@ -446,7 +470,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # чтобы ошибки не терялись
     print("ERROR:", context.error)
 
 
@@ -457,12 +480,13 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("env", env_cmd))
     app.add_handler(CommandHandler("ai_test", ai_test))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
 
-    # drop_pending_updates помогает после перезапусков не залипать на старых апдейтах
+    # важно при частых рестартах
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
