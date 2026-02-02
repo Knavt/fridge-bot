@@ -3,7 +3,6 @@ import json
 import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -26,7 +25,7 @@ SQLITE_PATH = "fridge.db"
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
 PLACE_LABEL = {"fridge": "Холодильник", "kitchen": "Кухня", "freezer": "Морозилка"}
 
-# ================= DATABASE =================
+# ================= DATABASE (Postgres pool or SQLite) =================
 PG_POOL = None
 if DATABASE_URL:
     from psycopg_pool import ConnectionPool
@@ -40,10 +39,10 @@ def db_init():
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS items (
                         id BIGSERIAL PRIMARY KEY,
-                        kind TEXT,
-                        place TEXT,
-                        text TEXT,
-                        created_at TIMESTAMPTZ
+                        kind TEXT NOT NULL,
+                        place TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL
                     )
                 """)
             con.commit()
@@ -52,16 +51,16 @@ def db_init():
             con.execute("""
                 CREATE TABLE IF NOT EXISTS items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    kind TEXT,
-                    place TEXT,
-                    text TEXT,
-                    created_at TEXT
+                    kind TEXT NOT NULL,
+                    place TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
             """)
             con.commit()
 
 
-def db_add(kind, place, text):
+def db_add(kind: str, place: str, text: str):
     now = datetime.now(tz=TZ)
     if PG_POOL:
         with PG_POOL.connection() as con:
@@ -75,12 +74,12 @@ def db_add(kind, place, text):
         with sqlite3.connect(SQLITE_PATH) as con:
             con.execute(
                 "INSERT INTO items(kind, place, text, created_at) VALUES (?,?,?,?)",
-                (kind, place, text, now.isoformat()),
+                (kind, place, text, now.isoformat(timespec="seconds")),
             )
             con.commit()
 
 
-def db_list(kind, place):
+def db_list(kind: str, place: str):
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
@@ -97,7 +96,32 @@ def db_list(kind, place):
         return cur.fetchall()
 
 
-def db_list_all():
+def db_list_all(kind: str):
+    """Fast: list all items of kind across all places (single query for Postgres)."""
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT place, id, text FROM items WHERE kind=%s ORDER BY place ASC, id ASC",
+                    (kind,),
+                )
+                rows = cur.fetchall()
+    else:
+        with sqlite3.connect(SQLITE_PATH) as con:
+            cur = con.execute(
+                "SELECT place, id, text FROM items WHERE kind=? ORDER BY place ASC, id ASC",
+                (kind,),
+            )
+            rows = cur.fetchall()
+
+    result = {p: [] for p in ("fridge", "kitchen", "freezer")}
+    for place, item_id, text in rows:
+        result[str(place)].append((int(item_id), str(text)))
+    return result
+
+
+def db_all_raw():
+    """All rows for AI delete matching."""
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
@@ -108,7 +132,7 @@ def db_list_all():
         return cur.fetchall()
 
 
-def db_delete(item_id):
+def db_delete(item_id: int):
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
@@ -124,19 +148,35 @@ def db_delete(item_id):
 AI_PROMPT = """
 Ты помощник телеграм-бота учета еды.
 
-Верни ТОЛЬКО JSON.
+Пользователь пишет по-русски, разговорно.
 
-action:
-- add
-- delete
-- unknown
+Верни ТОЛЬКО JSON. Без текста вне JSON.
 
-kind: meal | ingredient
-place: fridge | kitchen | freezer
+Определи намерение:
+— "добавь", "положи", "купили", "закинь", "есть", "появилось" → action = "add"
+— "съели", "убери", "удали", "кончилось", "нет" → action = "delete"
 
-items: список названий
+Разговорные слова (место):
+— "холодос", "холодильник" → fridge
+— "морозилка", "заморозка" → freezer
+— "кухня" → kitchen
 
-Если не уверен — action=unknown.
+Если место не указано → place="fridge"
+
+kind:
+— если похоже на готовое блюдо (суп, борщ, голубцы, рагу, плов) → meal
+— если похоже на продукт (молоко, яйца, курица, сыр) → ingredient
+Если сомневаешься → ingredient
+
+Формат:
+{
+  "action": "add | delete | unknown",
+  "kind": "meal | ingredient",
+  "place": "fridge | kitchen | freezer",
+  "items": ["название1", "название2"]
+}
+
+Если есть явное действие (добавь/удали/съели/положи) — НЕ возвращай unknown.
 """
 
 def ai_parse(text: str) -> dict:
@@ -156,44 +196,81 @@ def ai_parse(text: str) -> dict:
             ],
             temperature=0,
         )
-        return json.loads(r.choices[0].message.content.strip())
-    except Exception:
+        content = r.choices[0].message.content.strip()
+        result = json.loads(content)
+        print("AI parsed:", result)
+        return result
+    except Exception as e:
+        print("AI error:", e)
         return {"action": "unknown"}
 
 
-# ================= UI =================
+# ================= Helpers =================
+def esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fmt_rows(rows):
+    if not rows:
+        return "— (пусто)"
+    out = []
+    for i, (_id, text) in enumerate(rows, start=1):
+        out.append(f"<b>{i}.</b> {esc(text)}")
+    return "\n".join(out)
+
+
+def parse_add_lines(text: str):
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def parse_delete_nums(text: str):
+    cleaned = text.replace(",", " ").replace(";", " ")
+    parts = [p.strip() for p in cleaned.split() if p.strip()]
+    nums = []
+    for p in parts:
+        if p.isdigit():
+            nums.append(int(p))
+    return sorted(set(nums))
+
+
+# ================= UI (2 columns) =================
 def kb_main():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ Добавить", callback_data="add"),
-            InlineKeyboardButton("➖ Удалить", callback_data="del"),
+            InlineKeyboardButton("➕ Добавить", callback_data="act:add"),
+            InlineKeyboardButton("➖ Удалить", callback_data="act:del"),
         ],
         [
-            InlineKeyboardButton("❓ Что осталось?", callback_data="show"),
-            InlineKeyboardButton("🏠 Меню", callback_data="menu"),
+            InlineKeyboardButton("❓ Что осталось?", callback_data="act:show"),
+            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
         ],
     ])
 
 
-def kb_kind(action):
+def kb_kind(action: str):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🍲 Готовые блюда", callback_data=f"{action}:meal"),
-            InlineKeyboardButton("🥕 Ингредиенты", callback_data=f"{action}:ingredient"),
+            InlineKeyboardButton("🍲 Готовые блюда", callback_data=f"{action}:kind:meal"),
+            InlineKeyboardButton("🥕 Ингредиенты", callback_data=f"{action}:kind:ingredient"),
         ],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="menu")],
+        [
+            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
+        ],
     ])
 
 
-def kb_place(action, kind):
+def kb_place(action: str, kind: str):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🧊 Холодильник", callback_data=f"{action}:{kind}:fridge"),
-            InlineKeyboardButton("🏠 Кухня", callback_data=f"{action}:{kind}:kitchen"),
+            InlineKeyboardButton("🧊 Холодильник", callback_data=f"{action}:place:{kind}:fridge"),
+            InlineKeyboardButton("🏠 Кухня", callback_data=f"{action}:place:{kind}:kitchen"),
         ],
         [
-            InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:{kind}:freezer"),
-            InlineKeyboardButton("⬅️ Назад", callback_data=f"{action}:back"),
+            InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer"),
+            InlineKeyboardButton("⬅️ Назад", callback_data=f"{action}:back_kind"),
+        ],
+        [
+            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
         ],
     ])
 
@@ -204,127 +281,192 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Главное меню:", reply_markup=kb_main())
 
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Ок, отмена. Главное меню:", reply_markup=kb_main())
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
 
-    if data == "menu":
+    if data == "nav:main":
         context.user_data.clear()
         await q.edit_message_text("Главное меню:", reply_markup=kb_main())
         return
 
-    if data in ("add", "del"):
-        context.user_data["act"] = data
-        await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(data))
-        return
-
-    if data.endswith(":back"):
-        act = context.user_data.get("act")
+    if data.startswith("act:"):
+        act = data.split(":", 1)[1]  # add/del/show
+        context.user_data.clear()
+        context.user_data["act"] = act
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
-    if data.count(":") == 1:
-        act, kind = data.split(":")
-        context.user_data["kind"] = kind
-        await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
+    if data.endswith(":back_kind"):
+        act = data.split(":")[0]
+        await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
-    if data.count(":") == 2:
-        act, kind, place = data.split(":")
-        context.user_data.update({"kind": kind, "place": place})
+    if ":kind:" in data:
+        act, _kw, kind = data.split(":")
+        context.user_data["act"] = act
+        context.user_data["kind"] = kind
+
+        if act in ("add", "del"):
+            await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
+        elif act == "show":
+            allp = db_list_all(kind)
+            blocks = []
+            for place in ("fridge", "kitchen", "freezer"):
+                blocks.append(f"<b>{PLACE_LABEL[place]}</b>\n{fmt_rows(allp[place])}")
+            text = f"Остатки: <b>{KIND_LABEL[kind]}</b>\n\n" + "\n\n".join(blocks)
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb_main())
+        return
+
+    if ":place:" in data:
+        act, _place_kw, kind, place = data.split(":")
+        context.user_data["act"] = act
+        context.user_data["kind"] = kind
+        context.user_data["place"] = place
 
         if act == "add":
             await q.edit_message_text(
-                "Напиши названия.\nМожно несколько строк.",
+                f"Добавление: <b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
+                "Напиши названия одним сообщением.\n"
+                "Можно несколько строк:\nСуп\nРагу",
+                parse_mode=ParseMode.HTML,
                 reply_markup=kb_main(),
             )
             return
 
         if act == "del":
             rows = db_list(kind, place)
-            context.user_data["rows"] = rows
-            if not rows:
-                await q.edit_message_text("Пусто.", reply_markup=kb_main())
-                return
+            context.user_data["del_rows"] = rows
 
-            msg = "\n".join([f"{i+1}. {t}" for i, (_, t) in enumerate(rows)])
-            await q.edit_message_text(
-                f"Отправь номер(а) для удаления:\n\n{msg}",
+            msg = (
+                f"Удаление: <b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
+                f"{fmt_rows(rows)}\n\n"
+                "Отправь номер(а) строк для удаления.\n"
+                "Примеры: <b>2</b> или <b>1 4</b> или <b>1, 4</b>\n"
+                "/cancel — отмена."
+            )
+            await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb_main())
+            return
+
+    await q.edit_message_text("Не понял кнопку. Главное меню:", reply_markup=kb_main())
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text or ""
+    text = raw.strip()
+
+    # ======= 1) If in ADD flow: multiline add =======
+    if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
+        kind = context.user_data["kind"]
+        place = context.user_data["place"]
+        items = parse_add_lines(raw)
+        if not items:
+            await update.message.reply_text("Пусто. Напиши хотя бы одну строку или /cancel.")
+            return
+        for t in items:
+            db_add(kind, place, t)
+        context.user_data.clear()
+        await update.message.reply_text(f"Добавил ✅ {len(items)} шт.", reply_markup=kb_main())
+        return
+
+    # ======= 2) If in DEL flow: numbers delete (multi) =======
+    if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
+        nums = parse_delete_nums(text)
+        rows = context.user_data.get("del_rows", [])
+
+        if not nums:
+            await update.message.reply_text(
+                "Для удаления отправь номер(а) строк.\nПримеры: 2 или 1 4 или 1, 4\n/cancel — отмена.",
                 reply_markup=kb_main(),
             )
             return
 
-    if data == "show":
-        rows = db_list_all()
-        if not rows:
-            await q.edit_message_text("Пусто.", reply_markup=kb_main())
+        valid = [n for n in nums if 1 <= n <= len(rows)]
+        if not valid:
+            await update.message.reply_text(f"Сейчас доступно 1..{len(rows)}. Попробуй снова.", reply_markup=kb_main())
             return
 
-        out = []
-        for i, (_, kind, place, text) in enumerate(rows, start=1):
-            out.append(f"{i}. {text} ({KIND_LABEL[kind]} / {PLACE_LABEL[place]})")
+        for n in sorted(valid, reverse=True):
+            item_id = rows[n - 1][0]
+            db_delete(item_id)
 
-        await q.edit_message_text("\n".join(out), reply_markup=kb_main())
+        # refresh snapshot
+        kind = context.user_data.get("kind")
+        place = context.user_data.get("place")
+        context.user_data["del_rows"] = db_list(kind, place)
 
-
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-
-    # === DELETE BY NUMBERS ===
-    if context.user_data.get("act") == "del" and text.replace(",", " ").replace(" ", "").isdigit():
-        nums = sorted(set(int(n) for n in text.replace(",", " ").split()))
-        rows = context.user_data.get("rows", [])
-        for n in reversed(nums):
-            if 1 <= n <= len(rows):
-                db_delete(rows[n - 1][0])
-        await update.message.reply_text("Удалил ✅", reply_markup=kb_main())
-        context.user_data.clear()
+        await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=kb_main())
         return
 
-    # === ADD MODE ===
-    if context.user_data.get("act") == "add":
-        kind = context.user_data["kind"]
-        place = context.user_data["place"]
-        for line in text.splitlines():
-            if line.strip():
-                db_add(kind, place, line.strip())
-        await update.message.reply_text("Добавил ✅", reply_markup=kb_main())
-        context.user_data.clear()
-        return
-
-    # === AI (ONLY WHEN NOT IN MENU FLOW) ===
+    # ======= 3) Free text -> AI (only when NOT in flows) =======
     ai = ai_parse(text)
-    if ai.get("action") in ("add", "delete"):
+    action = ai.get("action", "unknown")
+
+    if action == "add":
+        kind = ai.get("kind", "ingredient")
+        place = ai.get("place", "fridge")
         items = ai.get("items", [])
-        if ai["action"] == "add":
-            kind = ai.get("kind", "ingredient")
-            place = ai.get("place", "fridge")
-            for i in items:
-                db_add(kind, place, i)
-            await update.message.reply_text("🤖 Добавил по описанию", reply_markup=kb_main())
+
+        # Accept also when model returns string instead of list
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, list) or not items:
+            await update.message.reply_text("Не понял, что именно добавить. Используй кнопки 👇", reply_markup=kb_main())
             return
 
-        if ai["action"] == "delete":
-            names = [n.lower() for n in items]
-            rows = db_list_all()
-            for item_id, _, _, text in rows:
-                if text.lower() in names:
-                    db_delete(item_id)
-            await update.message.reply_text("🤖 Удалил по описанию", reply_markup=kb_main())
+        for i in items:
+            if isinstance(i, str) and i.strip():
+                db_add(kind, place, i.strip())
+
+        await update.message.reply_text(
+            f"🤖 Добавил {len(items)} шт.\n{KIND_LABEL.get(kind, kind)} → {PLACE_LABEL.get(place, place)}",
+            reply_markup=kb_main(),
+        )
+        return
+
+    if action == "delete":
+        items = ai.get("items", [])
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, list) or not items:
+            await update.message.reply_text("Не понял, что удалить. Используй кнопки 👇", reply_markup=kb_main())
             return
 
+        names = [str(x).strip().lower() for x in items if str(x).strip()]
+        if not names:
+            await update.message.reply_text("Не понял, что удалить. Используй кнопки 👇", reply_markup=kb_main())
+            return
+
+        rows = db_all_raw()
+        deleted = 0
+
+        # delete exact matches (case-insensitive); simple and predictable
+        for item_id, _kind, _place, t in rows:
+            if str(t).strip().lower() in names:
+                db_delete(int(item_id))
+                deleted += 1
+
+        await update.message.reply_text(f"🤖 Удалил {deleted} шт.", reply_markup=kb_main())
+        return
+
+    # ======= 4) Fallback =======
     await update.message.reply_text("Не понял. Используй кнопки 👇", reply_markup=kb_main())
 
 
-# ================= MAIN =================
 def main():
     db_init()
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
