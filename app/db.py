@@ -199,3 +199,21 @@ def db_update_created_at(item_id: int, created_at: datetime) -> None:
                 (created_at.isoformat(timespec="seconds"), item_id),
             )
             con.commit()
+
+
+def db_update_place_and_date(item_id: int, place: str, created_at: datetime) -> None:
+    if PG_POOL:
+        with PG_POOL.connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "UPDATE items SET place=%s, created_at=%s WHERE id=%s",
+                    (place, created_at, item_id),
+                )
+            con.commit()
+    else:
+        with sqlite3.connect(SQLITE_PATH) as con:
+            con.execute(
+                "UPDATE items SET place=?, created_at=? WHERE id=?",
+                (place, created_at.isoformat(timespec="seconds"), item_id),
+            )
+            con.commit()

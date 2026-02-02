@@ -36,6 +36,7 @@ from app.ui import (
     kb_photo_wait_back,
     kb_confirm_photo,
     kb_edit_field,
+    kb_move_dest,
 )
 from app.utils import (
     esc,
@@ -53,6 +54,7 @@ from app.db import (
     db_delete,
     db_update_text,
     db_update_created_at,
+    db_update_place_and_date,
 )
 from app.ai import (
     ai_parse_text,
@@ -375,6 +377,31 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
+    if data == "move:back_place":
+        kind = context.user_data.get("kind", "ingredient")
+        await q.edit_message_text("Выбери место:", reply_markup=kb_place("move", kind))
+        return
+
+    if data.startswith("move:dest:"):
+        _, _kw, kind, from_place, to_place = data.split(":")
+        context.user_data["act"] = "move"
+        context.user_data["kind"] = kind
+        context.user_data["move_from"] = from_place
+        context.user_data["move_to"] = to_place
+
+        rows = db_list(kind, from_place)
+        context.user_data["move_rows"] = rows
+        msg = (
+            f"Переложить: <b>{KIND_LABEL[kind]}</b> → "
+            f"<b>{PLACE_LABEL[from_place]}</b> → <b>{PLACE_LABEL[to_place]}</b>\n\n"
+            f"{fmt_rows(rows)}\n\n"
+            "Отправь номер(а) строк для переноса.\n"
+            "Примеры: <b>2</b> или <b>1 4</b> или <b>1, 4</b>\n"
+            "/cancel — отмена."
+        )
+        await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=_main_kb(update))
+        return
+
     if data == "edit:back_place":
         kind = context.user_data.get("kind", "ingredient")
         await q.edit_message_text("Выбери место:", reply_markup=kb_place("edit", kind))
@@ -403,7 +430,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["act"] = act
         context.user_data["kind"] = kind
 
-        if act in ("add", "del", "edit"):
+        if act in ("add", "del", "edit", "move"):
             await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
             return
 
@@ -443,6 +470,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "/cancel — отмена."
             )
             await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=_main_kb(update))
+            return
+
+        if act == "move":
+            await q.edit_message_text(
+                "Куда переложить?",
+                reply_markup=kb_move_dest(kind, place),
+            )
             return
 
         if act == "edit":
@@ -524,6 +558,47 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Пришли фото одним сообщением.",
             parse_mode=ParseMode.HTML,
             reply_markup=kb_photo_wait_back(),
+        )
+        return
+
+    # Move items
+    if context.user_data.get("act") == "move" and "move_rows" in context.user_data:
+        rows = context.user_data.get("move_rows", [])
+        nums = parse_delete_nums(text)
+        if not nums:
+            await update.message.reply_text(
+                "Отправь номер(а) строк для переноса. Примеры: 2 или 1 4 или 1, 4",
+                reply_markup=_main_kb(update),
+            )
+            return
+        valid = [n for n in nums if 1 <= n <= len(rows)]
+        if not valid:
+            await update.message.reply_text(
+                f"Сейчас доступно 1..{len(rows)}. Попробуй снова.",
+                reply_markup=_main_kb(update),
+            )
+            return
+
+        to_place = context.user_data.get("move_to")
+        if to_place not in VALID_PLACES:
+            await update.message.reply_text("Не выбрано место назначения.", reply_markup=_main_kb(update))
+            return
+
+        now = datetime.now(tz=TZ)
+        moved = 0
+        for n in sorted(valid, reverse=True):
+            item_id = rows[n - 1][0]
+            db_update_place_and_date(item_id, to_place, now)
+            moved += 1
+
+        kind = context.user_data.get("kind")
+        from_place = context.user_data.get("move_from")
+        if kind and from_place:
+            context.user_data["move_rows"] = db_list(kind, from_place)
+
+        await update.message.reply_text(
+            f"Переложил ✅ {moved} шт. (дата обновлена)",
+            reply_markup=_main_kb(update),
         )
         return
 

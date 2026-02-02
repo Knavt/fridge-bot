@@ -1,4 +1,4 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+﻿from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def kb_main(is_admin: bool = False):
@@ -12,6 +12,7 @@ def kb_main(is_admin: bool = False):
             InlineKeyboardButton("❓ Что осталось?", callback_data="act:show"),
             InlineKeyboardButton("📷 Добавить по фото", callback_data="act:photo"),
         ],
+        [InlineKeyboardButton("📦 Переложить", callback_data="act:move")],
     ]
     if is_admin:
         rows.append(
@@ -21,9 +22,7 @@ def kb_main(is_admin: bool = False):
             ]
         )
     else:
-        rows.append(
-            [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")]
-        )
+        rows.append([InlineKeyboardButton("🏠 Меню", callback_data="nav:main")])
     rows.append([InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -41,7 +40,7 @@ def kb_kind(action: str):
 def kb_place(action: str, kind: str):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🧊 Холодильник", callback_data=f"{action}:place:{kind}:fridge"),
+            InlineKeyboardButton("🥶 Холодильник", callback_data=f"{action}:place:{kind}:fridge"),
             InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer"),
         ],
         [
@@ -50,6 +49,7 @@ def kb_place(action: str, kind: str):
         ],
         [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
+
 
 def kb_photo_kind():
     # Выбор типа для фото-распознавания
@@ -63,8 +63,7 @@ def kb_photo_kind():
 
 
 def kb_photo_wait_back():
-    # На шаге "пришлите фото" должна быть ОДНА кнопка "назад"
-    # Возвращаем к выбору типа фото
+    # На шаге "пришлите фото" должна быть одна кнопка "назад"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ Назад", callback_data="act:photo")]
     ])
@@ -91,3 +90,23 @@ def kb_edit_field():
     ])
 
 
+def kb_move_dest(kind: str, from_place: str):
+    buttons = []
+    if from_place != "fridge":
+        buttons.append(InlineKeyboardButton("🥶 Холодильник", callback_data=f"move:dest:{kind}:{from_place}:fridge"))
+    if from_place != "freezer":
+        buttons.append(InlineKeyboardButton("❄️ Морозилка", callback_data=f"move:dest:{kind}:{from_place}:freezer"))
+    if from_place != "kitchen":
+        buttons.append(InlineKeyboardButton("🏠 Кухня", callback_data=f"move:dest:{kind}:{from_place}:kitchen"))
+
+    rows = []
+    if len(buttons) >= 2:
+        rows.append([buttons[0], buttons[1]])
+        if len(buttons) == 3:
+            rows.append([buttons[2]])
+    elif buttons:
+        rows.append([buttons[0]])
+
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="move:back_place")])
+    rows.append([InlineKeyboardButton("🏠 Меню", callback_data="nav:main")])
+    return InlineKeyboardMarkup(rows)
