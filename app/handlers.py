@@ -26,6 +26,10 @@ from app.config import (
     MORNING_TZ,
     MORNING_HOUR,
     MORNING_MINUTE,
+    EVENING_CHAT_ID,
+    EVENING_THREAD_ID,
+    EVENING_HOUR,
+    EVENING_MINUTE,
     ADMIN_IDS,
 )
 from app.ui import (
@@ -166,6 +170,18 @@ async def morning_job(context: ContextTypes.DEFAULT_TYPE):
         chat_id=MORNING_CHAT_ID,
         text=msg,
         message_thread_id=MORNING_THREAD_ID,
+    )
+
+
+async def evening_job(context: ContextTypes.DEFAULT_TYPE):
+    if not EVENING_CHAT_ID:
+        return
+    items = db_list_place("fridge")
+    msg = _build_morning_message(items)
+    await context.bot.send_message(
+        chat_id=EVENING_CHAT_ID,
+        text=msg,
+        message_thread_id=EVENING_THREAD_ID,
     )
 
 
@@ -808,6 +824,16 @@ def build_app() -> Application:
                 morning_job,
                 time=time(hour=MORNING_HOUR, minute=MORNING_MINUTE, tzinfo=MORNING_TZ),
                 name="morning_reminder",
+            )
+
+    if EVENING_CHAT_ID:
+        if app.job_queue is None:
+            print("JobQueue not available: install python-telegram-bot[job-queue]")
+        else:
+            app.job_queue.run_daily(
+                evening_job,
+                time=time(hour=EVENING_HOUR, minute=EVENING_MINUTE, tzinfo=MORNING_TZ),
+                name="evening_reminder",
             )
 
     app.add_error_handler(on_error)
