@@ -187,30 +187,30 @@ def ai_parse(text: str) -> dict:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
 
-        # Responses API — рекомендовано для GPT-5
         resp = client.responses.create(
             model="gpt-5-nano",
             input=[
-                {"role": "system", "content": AI_PROMPT},
+                {
+                    "role": "system",
+                    "content": AI_PROMPT + "\n\n"
+                    "Отвечай СТРОГО валидным JSON без markdown."
+                },
                 {"role": "user", "content": text},
             ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "json_schema": AI_SCHEMA
-                }
-            },
             max_output_tokens=200,
         )
 
-        out = (resp.output_text or "").strip()
-        result = json.loads(out) if out else {"action": "unknown"}
-        print("AI parsed:", result)
-        return result
+        raw = (resp.output_text or "").strip()
+        print("AI raw:", raw)
+
+        if not raw:
+            return {"action": "unknown"}
+
+        return json.loads(raw)
+
     except Exception as e:
         print("AI error:", e)
         return {"action": "unknown"}
-
 
 # ================= Helpers =================
 def esc(s: str) -> str:
