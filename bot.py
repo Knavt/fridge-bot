@@ -214,8 +214,9 @@ def find_matches(rows: List[Tuple[int, str, str, str]], query: str) -> List[Tupl
     return subs
 
 
-# ================= UI (2 columns) =================
+# ================= UI =================
 def kb_main():
+    # 2 столбца, 3 ряда
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("➕ Добавить", callback_data="act:add"),
@@ -223,6 +224,10 @@ def kb_main():
         ],
         [
             InlineKeyboardButton("❓ Что осталось?", callback_data="act:show"),
+            InlineKeyboardButton("📷 Добавить по фото", callback_data="act:photo"),
+        ],
+        [
+            InlineKeyboardButton("✖️ Отмена", callback_data="nav:cancel"),
             InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
         ],
     ])
@@ -252,6 +257,17 @@ def kb_place(action: str, kind: str):
     ])
 
 
+def kb_photo_kind():
+    # Выбор типа для фото-распознавания
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍲 Готовое блюдо", callback_data="photo:kind:meal"),
+            InlineKeyboardButton("🥕 Ингредиент", callback_data="photo:kind:ingredient"),
+        ],
+        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
+    ])
+
+
 def kb_confirm_photo():
     return InlineKeyboardMarkup([
         [
@@ -262,7 +278,7 @@ def kb_confirm_photo():
     ])
 
 
-# ================= AI (TEXT + PHOTO) =================
+# ================= AI =================
 AI_TEXT_PROMPT = """
 Ты помощник телеграм-бота учета еды.
 
@@ -286,29 +302,47 @@ AI_TEXT_PROMPT = """
 Если есть явное действие — НЕ возвращай unknown.
 
 Если неясно блюдо или ингредиент:
-- суп/борщ/рагу/голубцы/плов/котлеты -> meal
+- суп/борщ/рагу/голубцы/плов/котлеты/макароны -> meal
 - молоко/яйца/сыр/курица/масло/овощи -> ingredient
 Если сомневаешься -> ingredient.
 """
 
-AI_PHOTO_PROMPT = """
-Ты смотришь на фото и определяешь, какие продукты/блюда на нём видны.
+AI_PHOTO_PROMPT_MEAL = """
+Ты видишь фото ЕДЫ. Твоя задача — назвать ОДНО готовое блюдо, которое лучше всего описывает фото.
 
 Верни ТОЛЬКО валидный JSON (без markdown).
 Формат:
 {
   "action": "add",
-  "kind": "ingredient" | "meal",
-  "place": "fridge" | "kitchen" | "freezer",
+  "kind": "meal",
+  "place": "fridge",
+  "items": ["одно название блюда"]
+}
+
+КРИТИЧЕСКИ ВАЖНО:
+- items ДОЛЖЕН содержать РОВНО 1 строку
+- не перечисляй ингредиенты отдельными пунктами (НЕ "макароны, креветки, шпинат")
+- пиши как блюдо целиком (например: "макароны с креветками и шпинатом")
+- без брендов, без лишних слов
+- если совсем не уверен: items=[]
+"""
+
+AI_PHOTO_PROMPT_ING = """
+Ты видишь фото продуктов/ингредиентов. Твоя задача — перечислить продукты, которые видны.
+
+Верни ТОЛЬКО валидный JSON (без markdown).
+Формат:
+{
+  "action": "add",
+  "kind": "ingredient",
+  "place": "fridge",
   "items": ["название1", "название2", ...]
 }
 
 Правила:
-- action всегда "add"
-- kind по умолчанию "ingredient", если похоже на готовое блюдо (кастрюля супа/контейнер с рагу) -> "meal"
-- place по умолчанию "fridge"
-- items: короткие русские названия, без брендов, без лишних слов
-- если ничего не распознал уверенно -> items=[]
+- короткие русские названия
+- без брендов
+- если не уверен: items=[]
 """
 
 
@@ -344,33 +378,36 @@ def ai_parse_text(text: str) -> Dict[str, Any]:
         return {"action": "unknown"}
 
 
-async def ai_parse_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
+async def ai_parse_photo_kind(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str) -> Dict[str, Any]:
     """
-    Downloads the biggest photo, sends to OpenAI vision, returns parsed JSON dict.
+    kind: "meal" or "ingredient" (pre-selected by user)
+    Downloads photo and sends it to OpenAI vision.
     """
     client = openai_client()
     if client is None:
-        return {"action": "add", "kind": "ingredient", "place": "fridge", "items": []}
+        return {"action": "add", "kind": kind, "place": "fridge", "items": []}
 
     try:
         if not update.message or not update.message.photo:
-            return {"action": "add", "kind": "ingredient", "place": "fridge", "items": []}
+            return {"action": "add", "kind": kind, "place": "fridge", "items": []}
 
-        photo = update.message.photo[-1]  # highest resolution
+        photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         data_bytes = await file.download_as_bytearray()
 
         b64 = base64.b64encode(bytes(data_bytes)).decode("ascii")
         data_url = f"data:image/jpeg;base64,{b64}"
 
+        prompt = AI_PHOTO_PROMPT_MEAL if kind == "meal" else AI_PHOTO_PROMPT_ING
+
         resp = client.responses.create(
             model="gpt-4o-mini",
             input=[
-                {"role": "system", "content": AI_PHOTO_PROMPT},
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": "Что на фото? Верни JSON."},
+                        {"type": "input_text", "text": "Верни JSON по правилам."},
                         {"type": "input_image", "image_url": data_url},
                     ],
                 },
@@ -381,12 +418,34 @@ async def ai_parse_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         raw = (resp.output_text or "").strip()
         print("AI photo raw:", raw)
         if not raw:
-            return {"action": "add", "kind": "ingredient", "place": "fridge", "items": []}
-        return json.loads(raw)
+            return {"action": "add", "kind": kind, "place": "fridge", "items": []}
+        parsed = json.loads(raw)
+
+        # Жёсткая нормализация под наши правила
+        items = parsed.get("items", [])
+        if isinstance(items, str):
+            items = [items]
+        if not isinstance(items, list):
+            items = []
+        items = [str(x).strip() for x in items if str(x).strip()]
+
+        # Для готового блюда гарантируем 1 позицию
+        if kind == "meal":
+            if items:
+                items = [items[0]]
+            else:
+                items = []
+
+        return {
+            "action": "add",
+            "kind": kind,
+            "place": "fridge",
+            "items": items,
+        }
 
     except Exception as e:
         print("AI photo error:", e)
-        return {"action": "add", "kind": "ingredient", "place": "fridge", "items": []}
+        return {"action": "add", "kind": kind, "place": "fridge", "items": []}
 
 
 # ================= COMMANDS =================
@@ -416,15 +475,43 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
 
-    # global nav
     if data == "nav:main":
         context.user_data.clear()
         await q.edit_message_text("Главное меню:", reply_markup=kb_main())
         return
 
-    # photo confirm/cancel
+    if data == "nav:cancel":
+        context.user_data.clear()
+        await q.edit_message_text("Отменил. Главное меню:", reply_markup=kb_main())
+        return
+
+    # --- Photo flow entry
+    if data == "act:photo":
+        context.user_data.clear()
+        context.user_data["photo_mode"] = "choose_kind"
+        await q.edit_message_text("Фото-распознавание: выбери тип:", reply_markup=kb_photo_kind())
+        return
+
+    # --- Photo kind selected
+    if data.startswith("photo:kind:"):
+        _, _, kind = data.split(":")
+        if kind not in VALID_KINDS:
+            kind = "ingredient"
+        context.user_data.clear()
+        context.user_data["photo_mode"] = "wait_photo"
+        context.user_data["photo_kind"] = kind
+        await q.edit_message_text(
+            f"Ок. Тип: <b>{KIND_LABEL[kind]}</b>\n\nТеперь пришли <b>фото</b> одним сообщением.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb_main(),
+        )
+        return
+
+    # --- Photo confirmation
     if data == "photo:cancel":
         context.user_data.pop("pending_photo", None)
+        context.user_data.pop("photo_mode", None)
+        context.user_data.pop("photo_kind", None)
         await q.edit_message_text("Ок, отменил. Главное меню:", reply_markup=kb_main())
         return
 
@@ -437,6 +524,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kind = pending.get("kind", "ingredient")
         place = pending.get("place", "fridge")
         items = pending.get("items", [])
+
         if kind not in VALID_KINDS:
             kind = "ingredient"
         if place not in VALID_PLACES:
@@ -450,11 +538,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db_add(kind, place, it.strip())
                 added += 1
 
+        # clear photo-related state
         context.user_data.pop("pending_photo", None)
-        await q.edit_message_text(f"Добавил ✅ {added} шт. ({KIND_LABEL[kind]} → {PLACE_LABEL[place]})", reply_markup=kb_main())
+        context.user_data.pop("photo_mode", None)
+        context.user_data.pop("photo_kind", None)
+
+        await q.edit_message_text(
+            f"Добавил ✅ {added} шт. ({KIND_LABEL[kind]} → {PLACE_LABEL[place]})",
+            reply_markup=kb_main(),
+        )
         return
 
-    # enter actions
+    # --- Standard flows
     if data.startswith("act:"):
         act = data.split(":", 1)[1]  # add / del / show
         context.user_data.clear()
@@ -467,7 +562,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
-    # choose kind
     if ":kind:" in data:
         act, _kw, kind = data.split(":")
         context.user_data["act"] = act
@@ -486,7 +580,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb_main())
             return
 
-    # choose place
     if ":place:" in data:
         act, _pkw, kind, place = data.split(":")
         context.user_data["act"] = act
@@ -497,8 +590,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(
                 f"Добавление: <b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
                 "Напиши названия одним сообщением.\n"
-                "Можно несколько строк:\nСуп\nРагу\n\n"
-                "Либо пришли фото (я предложу список и попрошу подтвердить).",
+                "Можно несколько строк:\nСуп\nРагу",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb_main(),
             )
@@ -525,7 +617,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = update.message.text or ""
     text = raw.strip()
 
-    # 1) ADD flow (manual) — multi-line
+    # If waiting for photo, reject text (strict flow)
+    if context.user_data.get("photo_mode") == "wait_photo":
+        kind = context.user_data.get("photo_kind", "ingredient")
+        await update.message.reply_text(
+            f"Сейчас жду фото для: {KIND_LABEL.get(kind, kind)}.\nПришли фото одним сообщением или нажми Отмена.",
+            reply_markup=kb_main(),
+        )
+        return
+
+    # 1) ADD flow (manual)
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
@@ -539,7 +640,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Добавил ✅ {len(items)} шт.", reply_markup=kb_main())
         return
 
-    # 2) DEL flow (manual) — numbers
+    # 2) DEL flow (manual)
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         nums = parse_delete_nums(text)
         rows = context.user_data.get("del_rows", [])
@@ -560,7 +661,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item_id = rows[n - 1][0]
             db_delete(item_id)
 
-        # refresh snapshot
         kind = context.user_data.get("kind")
         place = context.user_data.get("place")
         context.user_data["del_rows"] = db_list(kind, place)
@@ -568,7 +668,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=kb_main())
         return
 
-    # 3) Free-text AI
+    # 3) Free-text AI (add/delete)
     ai = ai_parse_text(text)
     action = ai.get("action", "unknown")
 
@@ -613,7 +713,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         rows = db_all_raw()
 
-        # Apply optional hints (if model provided)
+        # optional hints
         place_hint = ai.get("place")
         kind_hint = ai.get("kind")
 
@@ -627,7 +727,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for q in queries:
             matches = find_matches(rows, q)
-
             if len(matches) == 1:
                 db_delete(int(matches[0][0]))
                 deleted += 1
@@ -652,54 +751,50 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= PHOTO HANDLER =================
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Photo recognition:
-    - parse photo with AI
-    - show a confirmation message
-    - only after confirm -> add to DB
-    """
-    # If user is in delete-by-numbers flow, ignore photo
-    if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
-        await update.message.reply_text("Сейчас режим удаления. Нажми /cancel или Меню, потом пришли фото.", reply_markup=kb_main())
+    # Строго: фото принимаем ТОЛЬКО когда бот просил
+    if context.user_data.get("photo_mode") != "wait_photo":
+        await update.message.reply_text(
+            "Фото сейчас не принимаю.\nНажми «📷 Добавить по фото» и следуй шагам.",
+            reply_markup=kb_main(),
+        )
         return
 
-    # If user is in manual add flow (picked kind/place), we can still propose with those hints
-    hint_kind = context.user_data.get("kind") if context.user_data.get("act") == "add" else None
-    hint_place = context.user_data.get("place") if context.user_data.get("act") == "add" else None
-
-    parsed = await ai_parse_photo(update, context)
-
-    kind = parsed.get("kind", "ingredient")
-    place = parsed.get("place", "fridge")
-    items = parsed.get("items", [])
-
-    if hint_kind in VALID_KINDS:
-        kind = hint_kind
-    if hint_place in VALID_PLACES:
-        place = hint_place
-
+    kind = context.user_data.get("photo_kind", "ingredient")
     if kind not in VALID_KINDS:
         kind = "ingredient"
-    if place not in VALID_PLACES:
-        place = "fridge"
+
+    parsed = await ai_parse_photo_kind(update, context, kind)
+
+    items = parsed.get("items", [])
+    if isinstance(items, str):
+        items = [items]
     if not isinstance(items, list):
         items = []
-
     items = [str(x).strip() for x in items if str(x).strip()]
+
+    # meal должен быть один пункт
+    if kind == "meal" and items:
+        items = [items[0]]
+
     if not items:
-        await update.message.reply_text("По фото не смог уверенно распознать продукты. Попробуй другое фото или добавь текстом/кнопками.", reply_markup=kb_main())
+        await update.message.reply_text(
+            "По фото не смог уверенно распознать.\nПопробуй другое фото (крупнее/светлее) или добавь текстом.",
+            reply_markup=kb_main(),
+        )
+        # остаёмся в режиме ожидания фото, чтобы можно было прислать другое
         return
 
-    # Store pending action for confirmation
-    context.user_data["pending_photo"] = {"kind": kind, "place": place, "items": items}
+    # pending for confirm
+    context.user_data["pending_photo"] = {
+        "kind": kind,
+        "place": "fridge",
+        "items": items,
+    }
 
     preview = "\n".join([f"• {esc(x)}" for x in items[:30]])
-    if len(items) > 30:
-        preview += "\n• …"
-
     msg = (
-        f"Я распознал на фото и предлагаю добавить:\n\n"
-        f"<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
+        f"Я предлагаю добавить:\n\n"
+        f"<b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL['fridge']}</b>\n\n"
         f"{preview}\n\n"
         f"Подтвердить?"
     )
@@ -726,7 +821,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # photo handler must be before text handler so photos don't fall into text fallback
+    # Photo handler must be before text handler
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
