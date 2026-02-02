@@ -25,7 +25,7 @@ SQLITE_PATH = "fridge.db"
 KIND_LABEL = {"meal": "Готовые блюда", "ingredient": "Ингредиенты"}
 PLACE_LABEL = {"fridge": "Холодильник", "kitchen": "Кухня", "freezer": "Морозилка"}
 
-# ================= DATABASE (Postgres pool or SQLite) =================
+# ================= DATABASE =================
 PG_POOL = None
 if DATABASE_URL:
     from psycopg_pool import ConnectionPool
@@ -97,7 +97,6 @@ def db_list(kind: str, place: str):
 
 
 def db_list_all(kind: str):
-    """Fast: list all items of kind across all places (single query for Postgres)."""
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
@@ -121,7 +120,6 @@ def db_list_all(kind: str):
 
 
 def db_all_raw():
-    """All rows for AI delete matching."""
     if PG_POOL:
         with PG_POOL.connection() as con:
             with con.cursor() as cur:
@@ -148,35 +146,25 @@ def db_delete(item_id: int):
 AI_PROMPT = """
 Ты помощник телеграм-бота учета еды.
 
-Пользователь пишет по-русски, разговорно.
-
 Верни ТОЛЬКО JSON. Без текста вне JSON.
 
-Определи намерение:
-— "добавь", "положи", "купили", "закинь", "есть", "появилось" → action = "add"
-— "съели", "убери", "удали", "кончилось", "нет" → action = "delete"
+action:
+- add
+- delete
+- unknown
 
-Разговорные слова (место):
-— "холодос", "холодильник" → fridge
-— "морозилка", "заморозка" → freezer
-— "кухня" → kitchen
+kind: meal | ingredient
+place: fridge | kitchen | freezer
+items: список названий
 
-Если место не указано → place="fridge"
+Синонимы места:
+- "холодос", "холодильник" -> fridge
+- "морозилка" -> freezer
+- "кухня" -> kitchen
 
-kind:
-— если похоже на готовое блюдо (суп, борщ, голубцы, рагу, плов) → meal
-— если похоже на продукт (молоко, яйца, курица, сыр) → ingredient
-Если сомневаешься → ingredient
+Если место не указано -> fridge
 
-Формат:
-{
-  "action": "add | delete | unknown",
-  "kind": "meal | ingredient",
-  "place": "fridge | kitchen | freezer",
-  "items": ["название1", "название2"]
-}
-
-Если есть явное действие (добавь/удали/съели/положи) — НЕ возвращай unknown.
+Если есть явное действие ("добавь"/"положи"/"купили"/"закинь" или "съели"/"удали"/"убери"/"кончилось") — НЕ возвращай unknown.
 """
 
 def ai_parse(text: str) -> dict:
@@ -253,9 +241,7 @@ def kb_kind(action: str):
             InlineKeyboardButton("🍲 Готовые блюда", callback_data=f"{action}:kind:meal"),
             InlineKeyboardButton("🥕 Ингредиенты", callback_data=f"{action}:kind:ingredient"),
         ],
-        [
-            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
-        ],
+        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
 
 
@@ -269,9 +255,7 @@ def kb_place(action: str, kind: str):
             InlineKeyboardButton("❄️ Морозилка", callback_data=f"{action}:place:{kind}:freezer"),
             InlineKeyboardButton("⬅️ Назад", callback_data=f"{action}:back_kind"),
         ],
-        [
-            InlineKeyboardButton("🏠 Меню", callback_data="nav:main"),
-        ],
+        [InlineKeyboardButton("🏠 Меню", callback_data="nav:main")],
     ])
 
 
@@ -286,6 +270,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ок, отмена. Главное меню:", reply_markup=kb_main())
 
 
+async def ai_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Небольшой тест, чтобы убедиться, что OpenAI реально вызывается
+    res = ai_parse("Добавь молоко и яйца в холодильник")
+    await update.message.reply_text(f"AI_TEST: {res}")
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -297,7 +287,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("act:"):
-        act = data.split(":", 1)[1]  # add/del/show
+        act = data.split(":", 1)[1]
         context.user_data.clear()
         context.user_data["act"] = act
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
@@ -333,8 +323,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if act == "add":
             await q.edit_message_text(
                 f"Добавление: <b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
-                "Напиши названия одним сообщением.\n"
-                "Можно несколько строк:\nСуп\nРагу",
+                "Напиши названия одним сообщением.\nМожно несколько строк:\nСуп\nРагу",
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb_main(),
             )
@@ -343,6 +332,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if act == "del":
             rows = db_list(kind, place)
             context.user_data["del_rows"] = rows
+            context.user_data["kind"] = kind
+            context.user_data["place"] = place
 
             msg = (
                 f"Удаление: <b>{KIND_LABEL[kind]}</b> → <b>{PLACE_LABEL[place]}</b>\n\n"
@@ -361,7 +352,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = update.message.text or ""
     text = raw.strip()
 
-    # ======= 1) If in ADD flow: multiline add =======
+    # 1) ADD flow
     if context.user_data.get("act") == "add" and context.user_data.get("kind") and context.user_data.get("place"):
         kind = context.user_data["kind"]
         place = context.user_data["place"]
@@ -375,7 +366,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Добавил ✅ {len(items)} шт.", reply_markup=kb_main())
         return
 
-    # ======= 2) If in DEL flow: numbers delete (multi) =======
+    # 2) DEL flow
     if context.user_data.get("act") == "del" and "del_rows" in context.user_data:
         nums = parse_delete_nums(text)
         rows = context.user_data.get("del_rows", [])
@@ -396,7 +387,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item_id = rows[n - 1][0]
             db_delete(item_id)
 
-        # refresh snapshot
         kind = context.user_data.get("kind")
         place = context.user_data.get("place")
         context.user_data["del_rows"] = db_list(kind, place)
@@ -404,7 +394,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=kb_main())
         return
 
-    # ======= 3) Free text -> AI (only when NOT in flows) =======
+    # 3) Free text -> AI
     ai = ai_parse(text)
     action = ai.get("action", "unknown")
 
@@ -413,11 +403,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         place = ai.get("place", "fridge")
         items = ai.get("items", [])
 
-        # Accept also when model returns string instead of list
         if isinstance(items, str):
             items = [items]
         if not isinstance(items, list) or not items:
-            await update.message.reply_text("Не понял, что именно добавить. Используй кнопки 👇", reply_markup=kb_main())
+            await update.message.reply_text("Не понял, что добавить. Используй кнопки 👇", reply_markup=kb_main())
             return
 
         for i in items:
@@ -445,8 +434,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         rows = db_all_raw()
         deleted = 0
-
-        # delete exact matches (case-insensitive); simple and predictable
         for item_id, _kind, _place, t in rows:
             if str(t).strip().lower() in names:
                 db_delete(int(item_id))
@@ -455,18 +442,28 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🤖 Удалил {deleted} шт.", reply_markup=kb_main())
         return
 
-    # ======= 4) Fallback =======
     await update.message.reply_text("Не понял. Используй кнопки 👇", reply_markup=kb_main())
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # чтобы ошибки не терялись
+    print("ERROR:", context.error)
+
+
 def main():
+    print("OPENAI_API_KEY present:", bool(os.environ.get("OPENAI_API_KEY")))
     db_init()
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("ai_test", ai_test))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.add_error_handler(on_error)
+
+    # drop_pending_updates помогает после перезапусков не залипать на старых апдейтах
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
