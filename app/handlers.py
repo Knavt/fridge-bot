@@ -353,6 +353,24 @@ async def morning_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отправил тестовое утреннее сообщение.")
 
 
+async def evening_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not EVENING_CHAT_ID:
+        await update.message.reply_text("EVENING_CHAT_ID не задан.")
+        return
+    items = db_list_place("fridge")
+    msg = _build_evening_message(items)
+    try:
+        await context.bot.send_message(
+            chat_id=EVENING_CHAT_ID,
+            text=msg,
+            message_thread_id=EVENING_THREAD_ID,
+        )
+    except Exception as exc:
+        await update.message.reply_text(f"Ошибка отправки: {exc!r}")
+        return
+    await update.message.reply_text("Отправил тестовое вечернее сообщение.")
+
+
 async def whereami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     chat_id = msg.chat_id if msg else None
@@ -912,6 +930,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("ai_test", ai_test))
     app.add_handler(CommandHandler("edit", edit_cmd))
     app.add_handler(CommandHandler("morning_test", morning_test))
+    app.add_handler(CommandHandler("evening_test", evening_test))
     app.add_handler(CommandHandler("whereami", whereami))
 
     app.add_handler(CallbackQueryHandler(on_button))
