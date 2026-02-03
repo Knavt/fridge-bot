@@ -127,39 +127,25 @@ def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     entries.sort(key=lambda x: (-x[0], x[2].lower()))
 
     greetings = [
-        "Доброе утро! ☀️",
-        "Доброе утро! Пора заглянуть в холодильник 🙂",
-        "Доброе утро! Держу в курсе про еду 🧺",
+        "Доброе утро! Пора зарядиться вкусным",
+        "Утро доброе, холодильник бодр! Что прихватить",
+        "Подъем! Вот идеи, что взять с собой",
+        "С добрым утром! В рюкзак что-нибудь вкусное",
+        "Утренний чек-лист еды на работу",
+        "Доброе утро! Вот твои гастро-идеи",
+        "Проснулся — и еда уже готова. Берем",
+        "Доброе утро! Варианты для перекуса",
+        "Вкусного утра! Что взять сегодня",
+        "С добрым утром! Есть пару идей для ланча",
     ]
-    take_prefix = [
-        "Возьми с собой на работу:",
-        "Можно взять на работу:",
-        "На работу сегодня подойдет:",
-    ]
-    warn_prefix = [
-        "Пора доесть — уже 3 дня и больше:",
-        "Напоминание: этим продуктам уже 3+ дня:",
-        "Не забудьте скушать, им уже 3+ дня:",
-    ]
-
-    lines = [random.choice(greetings)]
 
     if not entries:
-        lines.append("В холодильнике пока пусто. Можно добавить продукты через меню.")
-        return "\n".join(lines)
+        return random.choice(greetings) + ":"
 
     take_items = entries[:3]
-    take_list = ", ".join([f"{t} ({d} дн.)" for d, _k, t in take_items])
-    lines.append(f"{random.choice(take_prefix)} {take_list}")
-
-    old_items = [e for e in entries if e[0] >= 3]
-    if old_items:
-        lines.append(random.choice(warn_prefix))
-        for days, _kind, text in old_items[:10]:
-            lines.append(f"• {text} — {days} дн. назад")
-    else:
-        lines.append("Пока нет продуктов старше 3 дней.")
-
+    lines = [random.choice(greetings) + ":"]
+    for _days, _k, t in take_items:
+        lines.append(f"• {t}")
     return "\n".join(lines)
 
 
@@ -179,12 +165,47 @@ async def evening_job(context: ContextTypes.DEFAULT_TYPE):
     if not EVENING_CHAT_ID:
         return
     items = db_list_place("fridge")
-    msg = _build_morning_message(items)
+    msg = _build_evening_message(items)
     await context.bot.send_message(
         chat_id=EVENING_CHAT_ID,
         text=msg,
         message_thread_id=EVENING_THREAD_ID,
     )
+
+
+def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
+    now = datetime.now(tz=MORNING_TZ)
+    entries: List[Tuple[int, str, str]] = []
+    for kind, text, created_at in items:
+        dt = _coerce_dt(created_at)
+        if not dt:
+            continue
+        days = (now.date() - dt.date()).days
+        entries.append((days, kind, text))
+
+    entries.sort(key=lambda x: (-x[0], x[2].lower()))
+
+    greetings = [
+        "Добрый вечер! Что скушаем на ужин",
+        "Время ужина! Предлагаю выбрать",
+        "Ужин зовет. Вот варианты",
+        "Вечер вкусный начинается здесь",
+        "Что на ужин? Есть идеи",
+        "Гастро-вечер: выбираем ужин",
+        "Пора ужинать! Что берем",
+        "Вечерний список вкусностей",
+        "Ужин-тайм! Есть несколько вариантов",
+        "Вкусного вечера! Что предпочитаешь",
+    ]
+
+    if not entries:
+        return random.choice(greetings) + ":"
+
+    take_items = entries[:3]
+    lines = [random.choice(greetings) + ":"]
+    for _days, _k, t in take_items:
+        lines.append(f"• {t}")
+    return "\n".join(lines)
 
 
 def _is_admin(update: Update) -> bool:
