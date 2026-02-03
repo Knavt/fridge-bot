@@ -41,6 +41,7 @@ from app.ui import (
     kb_confirm_photo,
     kb_edit_field,
     kb_move_dest,
+    kb_back,
 )
 from app.utils import (
     esc,
@@ -441,6 +442,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Выбери категорию:", reply_markup=kb_kind(act))
         return
 
+    if data in ("add:back_place", "del:back_place"):
+        act = data.split(":")[0]
+        kind = context.user_data.get("kind", "ingredient")
+        await q.edit_message_text("Выбери место:", reply_markup=kb_place(act, kind))
+        return
+
     if data == "move:back_place":
         kind = context.user_data.get("kind", "ingredient")
         await q.edit_message_text("Выбери место:", reply_markup=kb_place("move", kind))
@@ -478,14 +485,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(
                 "Отправь: номер и новое название.\nПример: <b>2 Паста карбонара</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=_main_kb(update),
+                reply_markup=kb_back("edit:back_place"),
             )
             return
         if field == "date":
             await q.edit_message_text(
                 "Отправь: номер и новую дату в формате <b>дд.мм.гггг</b>.\nПример: <b>2 04.02.2026</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=_main_kb(update),
+                reply_markup=kb_back("edit:back_place"),
             )
             return
 
@@ -519,7 +526,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Напиши названия одним сообщением.\n"
                 "Можно несколько строк:\nСуп\nРагу",
                 parse_mode=ParseMode.HTML,
-                reply_markup=_main_kb(update),
+                reply_markup=kb_back("add:back_place"),
             )
             return
 
@@ -533,7 +540,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Примеры: <b>2</b> или <b>1 4</b> или <b>1, 4</b>\n"
                 "/cancel — отмена."
             )
-            await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=_main_kb(update))
+            await q.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=kb_back("del:back_place"))
             return
 
         if act == "move":
@@ -564,10 +571,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("act") == "edit":
         if not _is_private(update):
-            await update.message.reply_text("Редактирование доступно только в личке.", reply_markup=_main_kb(update))
+            await update.message.reply_text("Редактирование доступно только в личке.", reply_markup=kb_back("edit:back_place"))
             return
         if not _is_admin(update):
-            await update.message.reply_text("Недостаточно прав.", reply_markup=_main_kb(update))
+            await update.message.reply_text("Недостаточно прав.", reply_markup=kb_back("edit:back_place"))
             return
         field = context.user_data.get("edit_field")
         rows = context.user_data.get("edit_rows", [])
@@ -583,14 +590,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if idx < 1 or idx > len(rows):
                 await update.message.reply_text(
                     f"Сейчас доступно 1..{len(rows)}. Попробуй снова.",
-                    reply_markup=_main_kb(update),
+                    reply_markup=kb_back("edit:back_place"),
                 )
                 return
             item_id = rows[idx - 1][0]
             if field == "text":
                 new_text = " ".join(parts[1:]).strip()
                 if not new_text:
-                    await update.message.reply_text("Новое название пустое.", reply_markup=_main_kb(update))
+                    await update.message.reply_text("Новое название пустое.", reply_markup=kb_back("edit:back_place"))
                     return
                 db_update_text(item_id, new_text)
             elif field == "date":
@@ -604,14 +611,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 db_update_created_at(item_id, dt)
             else:
-                await update.message.reply_text("Сначала выбери, что редактировать.", reply_markup=kb_edit_field())
+                await update.message.reply_text("Сначала выбери, что редактировать.", reply_markup=kb_back("edit:back_place"))
                 return
 
             kind = context.user_data.get("kind")
             place = context.user_data.get("place")
             if kind and place:
                 context.user_data["edit_rows"] = db_list(kind, place)
-            await update.message.reply_text("Готово. Можно редактировать дальше.", reply_markup=kb_edit_field())
+            await update.message.reply_text("Готово. Можно редактировать дальше.", reply_markup=kb_back("edit:back_place"))
             return
 
     # Строго: если ждём фото — текст не принимаем, и показываем только "Назад"
@@ -672,7 +679,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         place = context.user_data["place"]
         items = parse_add_lines(raw)
         if not items:
-            await update.message.reply_text("Пусто. Напиши хотя бы одну строку или /cancel.")
+            await update.message.reply_text(
+                "Пусто. Напиши хотя бы одну строку или /cancel.",
+                reply_markup=kb_back("add:back_place"),
+            )
             return
         for t in items:
             db_add(kind, place, t)
@@ -688,13 +698,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not nums:
             await update.message.reply_text(
                 "Для удаления отправь номер(а) строк.\nПримеры: 2 или 1 4 или 1, 4\n/cancel — отмена.",
-                reply_markup=_main_kb(update),
+                reply_markup=kb_back("del:back_place"),
             )
             return
 
         valid = [n for n in nums if 1 <= n <= len(rows)]
         if not valid:
-            await update.message.reply_text(f"Сейчас доступно 1..{len(rows)}. Попробуй снова.", reply_markup=_main_kb(update))
+            await update.message.reply_text(
+                f"Сейчас доступно 1..{len(rows)}. Попробуй снова.",
+                reply_markup=kb_back("del:back_place"),
+            )
             return
 
         for n in sorted(valid, reverse=True):
@@ -705,7 +718,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         place = context.user_data.get("place")
         context.user_data["del_rows"] = db_list(kind, place)
 
-        await update.message.reply_text(f"Удалил ✅ {len(valid)} шт.", reply_markup=_main_kb(update))
+        await update.message.reply_text(
+            f"Удалил ✅ {len(valid)} шт.",
+            reply_markup=kb_back("del:back_place"),
+        )
         return
 
     # Query: "есть ли ..."

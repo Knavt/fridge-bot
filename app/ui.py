@@ -110,3 +110,9 @@ def kb_move_dest(kind: str, from_place: str):
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="move:back_place")])
     rows.append([InlineKeyboardButton("🏠 Меню", callback_data="nav:main")])
     return InlineKeyboardMarkup(rows)
+
+
+def kb_back(callback_data: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data=callback_data)]
+    ])
