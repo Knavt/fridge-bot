@@ -6,7 +6,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 SQLITE_PATH = "fridge.db"
 
-TZ = ZoneInfo(os.environ.get("TZ", "Europe/Amsterdam").strip())
+TZ = ZoneInfo(os.environ.get("TZ", "Europe/Moscow").strip())
 
 VALID_KINDS = ("meal", "ingredient")
 VALID_PLACES = ("fridge", "freezer", "kitchen")
