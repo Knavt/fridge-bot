@@ -72,6 +72,16 @@ from app.welcome import WELCOME_TEXT
 DbDateValue = Union[str, datetime]
 
 
+def _is_fasting_day(dt: datetime) -> bool:
+    # Wednesday=2, Friday=4 in Python weekday()
+    return dt.weekday() in (2, 4)
+
+
+def _is_lenten_text(text: str) -> bool:
+    t = (text or "").lower()
+    return "пост" in t
+
+
 def _fmt_date(value: DbDateValue) -> str:
     if isinstance(value, datetime):
         dt = value
@@ -117,7 +127,12 @@ def _coerce_dt(value: DbDateValue) -> datetime | None:
 def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     now = datetime.now(tz=MORNING_TZ)
     entries: List[Tuple[int, str, str]] = []
+    fasting_today = _is_fasting_day(now)
     for kind, text, created_at in items:
+        if kind != "meal":
+            continue
+        if fasting_today and not _is_lenten_text(text):
+            continue
         dt = _coerce_dt(created_at)
         if not dt:
             continue
@@ -140,10 +155,12 @@ def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        return random.choice(greetings) + ":"
+        fast_note = " Сегодня пост" if fasting_today else ""
+        return random.choice(greetings) + fast_note + ":"
 
     take_items = entries[:3]
-    lines = [random.choice(greetings) + ":"]
+    fast_note = " Сегодня пост" if fasting_today else ""
+    lines = [random.choice(greetings) + fast_note + ":"]
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
@@ -176,7 +193,12 @@ async def evening_job(context: ContextTypes.DEFAULT_TYPE):
 def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     now = datetime.now(tz=MORNING_TZ)
     entries: List[Tuple[int, str, str]] = []
+    fasting_today = _is_fasting_day(now)
     for kind, text, created_at in items:
+        if kind != "meal":
+            continue
+        if fasting_today and not _is_lenten_text(text):
+            continue
         dt = _coerce_dt(created_at)
         if not dt:
             continue
@@ -199,10 +221,12 @@ def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        return random.choice(greetings) + ":"
+        fast_note = " Сегодня пост" if fasting_today else ""
+        return random.choice(greetings) + fast_note + ":"
 
     take_items = entries[:3]
-    lines = [random.choice(greetings) + ":"]
+    fast_note = " Сегодня пост" if fasting_today else ""
+    lines = [random.choice(greetings) + fast_note + ":"]
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
