@@ -79,7 +79,28 @@ def _is_fasting_day(dt: datetime) -> bool:
 
 def _is_lenten_text(text: str) -> bool:
     t = (text or "").lower()
-    return "пост" in t
+    if "пост" in t:
+        return True
+    # Simple heuristic: exclude obvious non-fasting foods
+    non_lenten_markers = [
+        "мяс",
+        "кур",
+        "говя",
+        "свин",
+        "колбас",
+        "ветчин",
+        "сосиск",
+        "рыб",
+        "яйц",
+        "сыр",
+        "молок",
+        "творог",
+        "слив",
+        "майонез",
+        "сметан",
+        "масл",
+    ]
+    return not any(m in t for m in non_lenten_markers)
 
 
 def _fmt_date(value: DbDateValue) -> str:
@@ -155,12 +176,15 @@ def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        fast_note = " Сегодня пост" if fasting_today else ""
-        return random.choice(greetings) + fast_note + ":"
+        base = random.choice(greetings) + ":"
+        if fasting_today:
+            return base + "\nСегодня пост. Подходящих блюд пока нет."
+        return base
 
     take_items = entries[:3]
-    fast_note = " Сегодня пост" if fasting_today else ""
-    lines = [random.choice(greetings) + fast_note + ":"]
+    lines = [random.choice(greetings) + ":"]
+    if fasting_today:
+        lines.append("Сегодня пост, выбираем постные блюда.")
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
@@ -221,12 +245,15 @@ def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        fast_note = " Сегодня пост" if fasting_today else ""
-        return random.choice(greetings) + fast_note + ":"
+        base = random.choice(greetings) + ":"
+        if fasting_today:
+            return base + "\nСегодня пост. Подходящих блюд пока нет."
+        return base
 
     take_items = entries[:3]
-    fast_note = " Сегодня пост" if fasting_today else ""
-    lines = [random.choice(greetings) + fast_note + ":"]
+    lines = [random.choice(greetings) + ":"]
+    if fasting_today:
+        lines.append("Сегодня пост, выбираем постные блюда.")
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
@@ -955,6 +982,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("edit", edit_cmd))
     app.add_handler(CommandHandler("morning_test", morning_test))
     app.add_handler(CommandHandler("evening_test", evening_test))
+    app.add_handler(CommandHandler("evening_post", evening_test))
     app.add_handler(CommandHandler("whereami", whereami))
 
     app.add_handler(CallbackQueryHandler(on_button))
