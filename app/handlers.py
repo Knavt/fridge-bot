@@ -72,37 +72,6 @@ from app.welcome import WELCOME_TEXT
 DbDateValue = Union[str, datetime]
 
 
-def _is_fasting_day(dt: datetime) -> bool:
-    # Wednesday=2, Friday=4 in Python weekday()
-    return dt.weekday() in (2, 4)
-
-
-def _is_lenten_text(text: str) -> bool:
-    t = (text or "").lower()
-    if "пост" in t:
-        return True
-    # Simple heuristic: exclude obvious non-fasting foods
-    non_lenten_markers = [
-        "мяс",
-        "кур",
-        "говя",
-        "свин",
-        "колбас",
-        "ветчин",
-        "сосиск",
-        "рыб",
-        "яйц",
-        "сыр",
-        "молок",
-        "творог",
-        "слив",
-        "майонез",
-        "сметан",
-        "масл",
-    ]
-    return not any(m in t for m in non_lenten_markers)
-
-
 def _fmt_date(value: DbDateValue) -> str:
     if isinstance(value, datetime):
         dt = value
@@ -148,11 +117,8 @@ def _coerce_dt(value: DbDateValue) -> datetime | None:
 def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     now = datetime.now(tz=MORNING_TZ)
     entries: List[Tuple[int, str, str]] = []
-    fasting_today = _is_fasting_day(now)
     for kind, text, created_at in items:
         if kind != "meal":
-            continue
-        if fasting_today and not _is_lenten_text(text):
             continue
         dt = _coerce_dt(created_at)
         if not dt:
@@ -176,15 +142,13 @@ def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        base = random.choice(greetings) + ":"
-        if fasting_today:
-            return base + "\nСегодня пост. Подходящих блюд пока нет."
-        return base
+        return random.choice(greetings) + ":"
 
     take_items = entries[:3]
     lines = [random.choice(greetings) + ":"]
-    if fasting_today:
-        lines.append("Сегодня пост, выбираем постные блюда.")
+    stale = [t for d, _k, t in entries if d > 3]
+    if stale:
+        lines.append("Давно лежит (больше 3 дней): " + ", ".join(stale[:3]))
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
@@ -217,11 +181,8 @@ async def evening_job(context: ContextTypes.DEFAULT_TYPE):
 def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     now = datetime.now(tz=MORNING_TZ)
     entries: List[Tuple[int, str, str]] = []
-    fasting_today = _is_fasting_day(now)
     for kind, text, created_at in items:
         if kind != "meal":
-            continue
-        if fasting_today and not _is_lenten_text(text):
             continue
         dt = _coerce_dt(created_at)
         if not dt:
@@ -245,15 +206,13 @@ def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
     ]
 
     if not entries:
-        base = random.choice(greetings) + ":"
-        if fasting_today:
-            return base + "\nСегодня пост. Подходящих блюд пока нет."
-        return base
+        return random.choice(greetings) + ":"
 
     take_items = entries[:3]
     lines = [random.choice(greetings) + ":"]
-    if fasting_today:
-        lines.append("Сегодня пост, выбираем постные блюда.")
+    stale = [t for d, _k, t in entries if d > 3]
+    if stale:
+        lines.append("Давно лежит (больше 3 дней): " + ", ".join(stale[:3]))
     for _days, _k, t in take_items:
         lines.append(f"• {t}")
     return "\n".join(lines)
