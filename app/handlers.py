@@ -146,11 +146,9 @@ def _build_morning_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
 
     take_items = entries[:3]
     lines = [random.choice(greetings) + ":"]
-    stale = [t for d, _k, t in entries if d >= 3]
-    if stale:
-        lines.append("Давно лежит (больше 3 дней): " + ", ".join(stale[:3]))
     for _days, _k, t in take_items:
-        lines.append(f"• {t}")
+        suffix = " — давно лежит" if _days >= 3 else ""
+        lines.append(f"• {t}{suffix}")
     return "\n".join(lines)
 
 
@@ -210,11 +208,9 @@ def _build_evening_message(items: List[Tuple[str, str, DbDateValue]]) -> str:
 
     take_items = entries[:3]
     lines = [random.choice(greetings) + ":"]
-    stale = [t for d, _k, t in entries if d >= 3]
-    if stale:
-        lines.append("Давно лежит (больше 3 дней): " + ", ".join(stale[:3]))
     for _days, _k, t in take_items:
-        lines.append(f"• {t}")
+        suffix = " — давно лежит" if _days >= 3 else ""
+        lines.append(f"• {t}{suffix}")
     return "\n".join(lines)
 
 
